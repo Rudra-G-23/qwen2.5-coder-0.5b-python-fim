@@ -201,6 +201,16 @@ def train(config_path: str = "configs/lora.yaml") -> None:
         args=training_args,
     )
 
+    # WORKAROUND: Prevent PicklingError for SFTConfig when saving checkpoints
+    import torch
+    _orig_torch_save = torch.save
+    def _patched_torch_save(obj, f, *args, **kwargs):
+        if type(obj).__name__ == "SFTConfig":
+            # Just skip saving the args to avoid the crash
+            return
+        return _orig_torch_save(obj, f, *args, **kwargs)
+    torch.save = _patched_torch_save
+
     # ── 5. Train ─────────────────────────────────────────────────────────────
     print("\n▶  Starting training…")
     result = trainer.train()
