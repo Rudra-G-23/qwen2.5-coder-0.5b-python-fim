@@ -57,6 +57,7 @@ cover/
 
 # Django stuff:
 *.log
+# logs/ is intentionally NOT ignored — it contains project documentation
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
@@ -216,3 +217,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project-specific: generated data and results (large files, not for version control)
+data/
+results/
+merged_model/
+*.gguf
