@@ -1,0 +1,45 @@
+
+## 0. Starting Point: Correcting the Original Assumption
+
+The project began from an observed pattern: autocomplete suggestions from a locally-run Qwen2.5 model (via Ollama + the Continue VS Code extension) seemed to improve with daily use, leading to the hypothesis that the model was being trained/updated by usage.
+
+**This is not what happens.** Ollama-served inference is stateless — no gradient updates, no weight changes, no memory across sessions. The apparent improvement is explained by:
+- Confirmation bias (noticing good completions, forgetting bad ones)
+- The user's own code becoming more self-similar/predictable over a session (repeated naming conventions, structure)
+- Continue's context window feeding more of the open file/session context into the prompt as a session progresses
+
+The real, buildable version of the underlying idea — training a small model that genuinely specializes to Python — is what this plan covers.
+
+---
+
+**Kaggle storage limits (confirmed current, not a constraint for this project):**
+- Private datasets: 200GB total quota.
+- Public dataset/model uploads: up to 200GB per item.
+- Your FIM dataset will realistically be tens to low hundreds of MB — nowhere near any limit.
+
+
+---
+
+## 5. What NOT to Implement (and why) — MoE and GRPO
+
+### Mixture of Experts (MoE)
+Not something you can "add" to an existing dense 0.5B checkpoint as a fine-tuning step. MoE is an architectural decision made at pretraining time (router networks, load-balancing losses, sparse layer structure), and only pays off with pretraining-scale compute. "Sparse upcycling" (converting dense checkpoints to MoE) exists as a technique but itself requires a full continued-pretraining run — outside this project's budget. **Verdict: list as Future Work in the paper. Do not attempt.**
+
+### GRPO
+Conceptually applicable — code completion has a verifiable reward (tests pass or not), which is exactly the kind of signal GRPO uses. But practically: it requires multiple rollouts per prompt, a reference model for the KL penalty, a safe code-execution reward function, and typically fast serving infrastructure (e.g. vLLM) that a standard Kaggle notebook isn't set up for. **Verdict: legitimate second-phase idea after a working SFT baseline and more compute. List as Future Work, do not fake-implement.**
+
+Listing both honestly as future work is a stronger choice than attempting a broken implementation — reviewers respect a clearly stated compute boundary.
+
+
+---
+
+**Referencing other papers' published numbers:**
+Legitimate *if and only if* the benchmark, metric definition, and evaluation protocol (prompt template, postprocessing) match, and your own measured numbers are clearly labeled separately from cited ones (e.g. "measured, this work" vs. "reported, [Author et al.]"). Standard practice in papers. To strengthen this: run the **base** Qwen2.5-Coder-0.5B yourself through your own harness (trivial extra cost since the harness already exists) rather than relying solely on someone else's published number for it — gives at least one fully apples-to-apples column generated end-to-end.
+
+---
+
+
+- **Mixture of Experts (MoE)** — architectural, pretraining-scale decision; sparse upcycling requires continued pretraining beyond this budget.
+- **GRPO** — conceptually applicable (verifiable code-execution reward), but requires multi-rollout sampling, a reference model, and fast serving infra (e.g. vLLM) not available on free-tier Kaggle. Legitimate next phase after a working SFT baseline and more compute.
+
+---

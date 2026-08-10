@@ -20,6 +20,7 @@ Usage (from Kaggle notebook, after training):
         test_data_path="data/fim_dataset.jsonl",
         output_dir="/kaggle/working/results",
         max_samples=200,
+        wandb_run=wandb_run,    # optional — pass the active run from train()
     )
 """
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -56,6 +58,7 @@ def load_model(
         adapter_path:    Local path or HF repo of the LoRA adapter.
                          Pass None to evaluate the raw base model.
     Returns:
+        (model, tokenizer)
     """
     try:
         from unsloth import FastLanguageModel
@@ -181,10 +184,22 @@ def evaluate_model(
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
-def plot_comparison(df: pd.DataFrame, output_dir: str = "results/plots") -> None:
+def plot_comparison(
+    df: pd.DataFrame,
+    output_dir: str = "results/plots",
+    wandb_run: Any | None = None,
+) -> str:
     """
     Grouped bar chart: Exact Match and Edit Similarity side-by-side
     for each model variant (Base, LoRA-FT).
+
+    Args:
+        df:          DataFrame with columns [model, exact_match, edit_similarity].
+        output_dir:  Directory to save the PNG.
+        wandb_run:   Active wandb.Run — if provided, logs the plot as a W&B Image.
+
+    Returns:
+        Absolute path to the saved PNG.
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
@@ -196,7 +211,7 @@ def plot_comparison(df: pd.DataFrame, output_dir: str = "results/plots") -> None
         (axes[1], "edit_similarity", "Edit Similarity"),
     ]:
         means = df.groupby("model")[metric].mean().reset_index()
-        bars = sns.barplot(
+        sns.barplot(
             data=means, x="model", y=metric, ax=ax, palette="viridis", width=0.5
         )
         ax.set_title(title, fontsize=12)
@@ -217,22 +232,38 @@ def plot_comparison(df: pd.DataFrame, output_dir: str = "results/plots") -> None
     plt.close()
     print(f"\n✓ Comparison plot → {out_path}")
 
+    # Log to W&B
+    if wandb_run is not None:
+        try:
+            import wandb
+            wandb_run.log({"eval/comparison_chart": wandb.Image(out_path)})
+        except Exception as exc:
+            print(f"⚠  W&B image log failed: {exc}")
+
+    return out_path
+
 
 def plot_loss_curve(
     trainer_log_path: str,
     output_dir: str = "results/plots",
-) -> None:
+    wandb_run: Any | None = None,
+) -> str | None:
     """
     Read the trainer_state.json log written by HuggingFace Trainer
     and plot training + validation loss curves.
 
-    trainer_log_path example:
-        /kaggle/working/checkpoints/trainer_state.json
+    Args:
+        trainer_log_path: Path to trainer_state.json (e.g. /kaggle/working/checkpoints/trainer_state.json)
+        output_dir:       Directory to save the PNG.
+        wandb_run:        Active wandb.Run — if provided, logs the plot as a W&B Image.
+
+    Returns:
+        Absolute path to the saved PNG, or None if no data.
     """
     log_path = Path(trainer_log_path)
     if not log_path.exists():
         print(f"⚠  Trainer log not found at {trainer_log_path} — skipping loss curve.")
-        return
+        return None
 
     with open(log_path) as f:
         state = json.load(f)
@@ -251,7 +282,7 @@ def plot_loss_curve(
 
     if not train_losses:
         print("⚠  No loss data in trainer log — skipping loss curve.")
-        return
+        return None
 
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     plt.figure(figsize=(9, 5))
@@ -269,6 +300,16 @@ def plot_loss_curve(
     plt.close()
     print(f"✓ Loss curve → {out_path}")
 
+    # Log to W&B
+    if wandb_run is not None:
+        try:
+            import wandb
+            wandb_run.log({"train/loss_curve": wandb.Image(out_path)})
+        except Exception as exc:
+            print(f"⚠  W&B image log failed: {exc}")
+
+    return out_path
+
 
 # ── Top-level orchestrator ────────────────────────────────────────────────────
 
@@ -279,7 +320,8 @@ def run_evaluation(
     output_dir: str = "results",
     max_samples: int = 200,
     trainer_log_path: str | None = None,
-) -> None:
+    wandb_run: Any | None = None,
+) -> pd.DataFrame:
     """
     Full evaluation pipeline:
       1. Load test data.
@@ -288,6 +330,7 @@ def run_evaluation(
       4. Save metrics CSV.
       5. Generate comparison bar chart.
       6. (Optional) Plot loss curve from trainer log.
+      7. (Optional) Log all results to W&B.
 
     Args:
         base_model_name:  HF model id for the base model.
@@ -296,8 +339,13 @@ def run_evaluation(
         output_dir:       Root directory for outputs (CSV + plots).
         max_samples:      Number of examples to evaluate per model.
         trainer_log_path: Path to trainer_state.json for loss curve plot.
+        wandb_run:        Active wandb.Run to log metrics and plots into.
+                          Pass None (default) to skip W&B logging.
+
+    Returns:
+        Summary DataFrame with aggregated metrics per model.
     """
-    # ── Load test records ────────────────────────────────────────────────────
+    # ── Load test records ─────────────────────────────────────────────────────
     test_records: list[dict] = []
     with open(test_data_path, encoding="utf-8") as f:
         for line in f:
@@ -310,7 +358,7 @@ def run_evaluation(
 
     all_results: list[dict] = []
 
-    # ── Evaluate base model ──────────────────────────────────────────────────
+    # ── Evaluate base model ───────────────────────────────────────────────────
     print("▶  Base model (no adapter)")
     base_model, tokenizer = load_model(base_model_name)
     all_results += evaluate_model(base_model, tokenizer, test_records, "Base", max_samples)
@@ -319,7 +367,7 @@ def run_evaluation(
         torch.cuda.empty_cache()
     print()
 
-    # ── Evaluate LoRA fine-tuned model ───────────────────────────────────────
+    # ── Evaluate LoRA fine-tuned model ────────────────────────────────────────
     print("▶  LoRA fine-tuned model")
     lora_model, tokenizer = load_model(base_model_name, adapter_path)
     all_results += evaluate_model(lora_model, tokenizer, test_records, "LoRA-FT", max_samples)
@@ -342,11 +390,31 @@ def run_evaluation(
     summary.to_csv(csv_path)
     print(f"\n✓ Metrics CSV → {csv_path}")
 
+    # Log scalar metrics to W&B
+    if wandb_run is not None:
+        try:
+            import wandb
+
+            for model_label, row in summary.iterrows():
+                prefix = "eval/base" if model_label == "Base" else "eval/lora_ft"
+                wandb_run.log({
+                    f"{prefix}/exact_match": row["exact_match"],
+                    f"{prefix}/edit_similarity": row["edit_similarity"],
+                })
+
+            # Log the full per-example results as a W&B Table for rich analysis
+            results_table = wandb.Table(dataframe=df)
+            wandb_run.log({"eval/results_table": results_table})
+        except Exception as exc:
+            print(f"⚠  W&B metrics log failed: {exc}")
+
     # ── Plots ─────────────────────────────────────────────────────────────────
     plots_dir = f"{output_dir}/plots"
-    plot_comparison(df, output_dir=plots_dir)
+    plot_comparison(df, output_dir=plots_dir, wandb_run=wandb_run)
     if trainer_log_path:
-        plot_loss_curve(trainer_log_path, output_dir=plots_dir)
+        plot_loss_curve(trainer_log_path, output_dir=plots_dir, wandb_run=wandb_run)
+
+    return summary
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -360,4 +428,5 @@ if __name__ == "__main__":
         output_dir="/kaggle/working/results",
         max_samples=200,
         trainer_log_path="/kaggle/working/checkpoints/trainer_state.json",
+        wandb_run=None,  # pass active run to enable W&B logging
     )

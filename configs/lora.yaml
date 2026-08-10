@@ -40,3 +40,23 @@ data:
 output:
   dir: "/kaggle/working/checkpoints"
   hf_repo: "Rudra-G-23/qwen2.5-coder-0.5b-python-fim-lora"
+
+# ── Weights & Biases ─────────────────────────────────────────────────────────
+# Run ID is built deterministically at runtime from the fields below.
+# Format: {model_slug}-lora-r{r}-e{epochs}-ds{dataset_version}-{YYYYMMDD}-a{attempt}
+# Example: qwen05b-lora-r16-e3-dsv1-20260810-a1
+wandb:
+  project: "rudraprasadbhuyan-ugie/qwen-coder-python-fim"
+
+  # ── Fields that compose the deterministic run ID ─────────────────────────
+  # Set these at the START of each Kaggle session before running.
+  attempt: 1                         # increment each time you re-run the same config
+  dataset_version: "v1"              # matches the Kaggle Dataset version attached
+
+  # ── Optional metadata ─────────────────────────────────────────────────────
+  tags:
+    - "qwen"
+    - "fim"
+    - "lora"
+    - "python"
+  notes: "LoRA FIM fine-tune of Qwen2.5-Coder-0.5B on Python fill-in-the-middle dataset"
