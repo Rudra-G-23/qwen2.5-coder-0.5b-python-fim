@@ -24,7 +24,7 @@ import torch
 import yaml
 from datasets import Dataset
 from peft import LoraConfig, TaskType, get_peft_model
-from transformers import TrainingArguments
+from trl import SFTConfig
 
 
 # ── Config loader ─────────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ def train(config_path: str = "configs/lora.yaml") -> None:
     output_dir = cfg["output"]["dir"]
     t = cfg["training"]
 
-    training_args = TrainingArguments(
+    training_args = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=t["num_epochs"],
         per_device_train_batch_size=t["per_device_train_batch_size"],

@@ -16,4 +16,5 @@ dependencies = [
     "seaborn>=0.13.2",
     "tokenizers>=0.22.2",
     "transformers>=5.14.1",
+    "trl>=0.17.0",
 ]
