@@ -1,0 +1,7 @@
+[project]
+name = "qwen2-5-coder-0-5b-python-fim"
+version = "0.1.0"
+description = "Fine-tuning a Small Code Model (Qwen2.5-Coder-0.5B) for Python Autocomplete"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = []
