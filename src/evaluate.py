@@ -56,19 +56,31 @@ def load_model(
         adapter_path:    Local path or HF repo of the LoRA adapter.
                          Pass None to evaluate the raw base model.
     Returns:
-        (model, tokenizer)
     """
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        base_model_name,
-        torch_dtype=torch.float16,
-        device_map="auto",
-    )
-    if adapter_path:
-        model = PeftModel.from_pretrained(model, adapter_path)
-        print(f"  ✓ Adapter loaded from: {adapter_path}")
+    try:
+        from unsloth import FastLanguageModel
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=base_model_name,
+            max_seq_length=2048,
+            dtype=torch.float16,
+            load_in_4bit=False,
+        )
+        if adapter_path:
+            model = PeftModel.from_pretrained(model, adapter_path)
+            print(f"  ✓ Adapter loaded from: {adapter_path}")
+        FastLanguageModel.for_inference(model)
+    except ImportError:
+        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            base_model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
+        )
+        if adapter_path:
+            model = PeftModel.from_pretrained(model, adapter_path)
+            print(f"  ✓ Adapter loaded from: {adapter_path}")
+        model.eval()
 
-    model.eval()
     return model, tokenizer
 
 
