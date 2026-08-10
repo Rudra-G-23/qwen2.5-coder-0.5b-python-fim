@@ -114,7 +114,13 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
         return None
 
     wandb_cfg = cfg.get("wandb", {})
-    project: str = wandb_cfg.get("project", "qwen-coder-python-fim")
+    full_project: str = wandb_cfg.get("project", "qwen-coder-python-fim")
+
+    if "/" in full_project:
+        entity, project = full_project.split("/", 1)
+    else:
+        entity = None
+        project = full_project
 
     # Flatten the full config into a plain dict for wandb.config
     flat_cfg: dict = {
@@ -149,6 +155,7 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
     }
 
     run = wandb.init(
+        entity=entity,
         project=project,
         name=run_id,
         id=run_id,           # deterministic — resume same run if re-run with same ID
@@ -159,10 +166,10 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
     )
 
     # Initialise Weave inside the same W&B run for joint tracing
-    weave.init(project)
+    weave.init(full_project)
     print(f"✓ W&B run  : {run.url}")
     print(f"  Run ID   : {run_id}")
-    print(f"  Project  : {project}")
+    print(f"  Project  : {full_project}")
 
     return run
 
