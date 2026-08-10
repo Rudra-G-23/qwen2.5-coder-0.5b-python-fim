@@ -37,7 +37,6 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-
 # ── Qwen2.5-Coder FIM tokens ──────────────────────────────────────────────────
 FIM_PREFIX = "<|fim_prefix|>"
 FIM_SUFFIX = "<|fim_suffix|>"
@@ -45,6 +44,7 @@ FIM_MIDDLE = "<|fim_middle|>"
 
 
 # ── Model helpers ─────────────────────────────────────────────────────────────
+
 
 def load_model(
     base_model_name: str,
@@ -62,6 +62,7 @@ def load_model(
     """
     try:
         from unsloth import FastLanguageModel
+
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model_name,
             max_seq_length=2048,
@@ -104,16 +105,17 @@ def generate_completion(
         output_ids = model.generate(
             **inputs,
             max_new_tokens=max_new_tokens,
-            do_sample=False,                        # greedy → deterministic
+            do_sample=False,  # greedy → deterministic
             pad_token_id=tokenizer.eos_token_id,
             eos_token_id=tokenizer.eos_token_id,
         )
     # Strip the prompt tokens, decode only new tokens
-    new_tokens = output_ids[0][inputs["input_ids"].shape[1]:]
+    new_tokens = output_ids[0][inputs["input_ids"].shape[1] :]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
 
 
 # ── Metrics ───────────────────────────────────────────────────────────────────
+
 
 def exact_match(predicted: str, reference: str) -> float:
     """1.0 if stripped strings match exactly, else 0.0."""
@@ -147,6 +149,7 @@ def edit_similarity(predicted: str, reference: str) -> float:
 
 
 # ── Per-model evaluation loop ─────────────────────────────────────────────────
+
 
 def evaluate_model(
     model,
@@ -183,6 +186,7 @@ def evaluate_model(
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
+
 
 def plot_comparison(
     df: pd.DataFrame,
@@ -223,7 +227,10 @@ def plot_comparison(
             ax.annotate(
                 f"{p.get_height():.3f}",
                 (p.get_x() + p.get_width() / 2.0, p.get_height() + 0.01),
-                ha="center", va="bottom", fontsize=10, fontweight="bold",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
             )
 
     plt.tight_layout()
@@ -236,6 +243,7 @@ def plot_comparison(
     if wandb_run is not None:
         try:
             import wandb
+
             wandb_run.log({"eval/comparison_chart": wandb.Image(out_path)})
         except Exception as exc:
             print(f"⚠  W&B image log failed: {exc}")
@@ -304,6 +312,7 @@ def plot_loss_curve(
     if wandb_run is not None:
         try:
             import wandb
+
             wandb_run.log({"train/loss_curve": wandb.Image(out_path)})
         except Exception as exc:
             print(f"⚠  W&B image log failed: {exc}")
@@ -312,6 +321,7 @@ def plot_loss_curve(
 
 
 # ── Top-level orchestrator ────────────────────────────────────────────────────
+
 
 def run_evaluation(
     base_model_name: str,
@@ -361,7 +371,9 @@ def run_evaluation(
     # ── Evaluate base model ───────────────────────────────────────────────────
     print("▶  Base model (no adapter)")
     base_model, tokenizer = load_model(base_model_name)
-    all_results += evaluate_model(base_model, tokenizer, test_records, "Base", max_samples)
+    all_results += evaluate_model(
+        base_model, tokenizer, test_records, "Base", max_samples
+    )
     del base_model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -370,7 +382,9 @@ def run_evaluation(
     # ── Evaluate LoRA fine-tuned model ────────────────────────────────────────
     print("▶  LoRA fine-tuned model")
     lora_model, tokenizer = load_model(base_model_name, adapter_path)
-    all_results += evaluate_model(lora_model, tokenizer, test_records, "LoRA-FT", max_samples)
+    all_results += evaluate_model(
+        lora_model, tokenizer, test_records, "LoRA-FT", max_samples
+    )
     del lora_model
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -397,10 +411,12 @@ def run_evaluation(
 
             for model_label, row in summary.iterrows():
                 prefix = "eval/base" if model_label == "Base" else "eval/lora_ft"
-                wandb_run.log({
-                    f"{prefix}/exact_match": row["exact_match"],
-                    f"{prefix}/edit_similarity": row["edit_similarity"],
-                })
+                wandb_run.log(
+                    {
+                        f"{prefix}/exact_match": row["exact_match"],
+                        f"{prefix}/edit_similarity": row["edit_similarity"],
+                    }
+                )
 
             # Log the full per-example results as a W&B Table for rich analysis
             results_table = wandb.Table(dataframe=df)

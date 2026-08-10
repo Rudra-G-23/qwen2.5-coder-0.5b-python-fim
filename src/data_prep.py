@@ -7,10 +7,10 @@ Usage (local, no GPU needed):
     python src/data_prep.py --source-dirs src local_tests --output data/fim_dataset.jsonl
 """
 
+import argparse
 import ast
 import json
 import random
-import argparse
 from pathlib import Path
 
 # ── Qwen2.5-Coder native FIM tokens ─────────────────────────────────────────
@@ -20,6 +20,7 @@ FIM_MIDDLE = "<|fim_middle|>"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def is_valid_python(source: str) -> bool:
     """Return True only if source is syntactically valid Python."""
@@ -83,6 +84,7 @@ def make_fim_triples(
 
 # ── Main dataset builder ──────────────────────────────────────────────────────
 
+
 def build_dataset(
     source_dirs: list[str],
     output_path: str,
@@ -121,7 +123,7 @@ def build_dataset(
     for fpath in python_files:
         try:
             source = fpath.read_text(encoding="utf-8", errors="ignore")
-        except Exception as exc:
+        except Exception:
             skipped_unreadable += 1
             continue
 
@@ -140,13 +142,15 @@ def build_dataset(
             seen.add(rec["text"])
             deduped.append(rec)
 
-    print(f"\n{'─'*50}")
-    print(f"Files processed :  {len(python_files) - skipped_invalid - skipped_unreadable}")
+    print(f"\n{'─' * 50}")
+    print(
+        f"Files processed :  {len(python_files) - skipped_invalid - skipped_unreadable}"
+    )
     print(f"Skipped (invalid syntax): {skipped_invalid}")
     print(f"Skipped (unreadable):     {skipped_unreadable}")
     print(f"Raw FIM triples :  {len(records)}")
     print(f"After dedup     :  {len(deduped)}")
-    print(f"{'─'*50}")
+    print(f"{'─' * 50}")
 
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -159,6 +163,7 @@ def build_dataset(
 
 
 # ── CLI entry point ───────────────────────────────────────────────────────────
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -176,15 +181,21 @@ def _parse_args() -> argparse.Namespace:
         help="Output JSONL path (default: data/fim_dataset.jsonl)",
     )
     parser.add_argument(
-        "--max-files", type=int, default=5000,
+        "--max-files",
+        type=int,
+        default=5000,
         help="Maximum number of .py files to process (default: 5000)",
     )
     parser.add_argument(
-        "--samples-per-file", type=int, default=5,
+        "--samples-per-file",
+        type=int,
+        default=5,
         help="FIM triples to extract per file (default: 5)",
     )
     parser.add_argument(
-        "--seed", type=int, default=42,
+        "--seed",
+        type=int,
+        default=42,
         help="Random seed (default: 42)",
     )
     return parser.parse_args()
