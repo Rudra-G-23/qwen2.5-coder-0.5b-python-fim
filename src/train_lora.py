@@ -185,6 +185,7 @@ def train(config_path: str = "configs/lora.yaml") -> None:
         report_to="none",              # change to "wandb" if you want W&B
         seed=t["seed"],
         dataloader_num_workers=2,
+        average_tokens_across_devices=False,
     )
 
     # ── 4. SFTTrainer ────────────────────────────────────────────────────────
