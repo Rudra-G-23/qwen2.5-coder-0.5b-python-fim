@@ -2,7 +2,7 @@ Now the end to end process is working. It create a model and also store in huggi
 Now make advancement all of this codebase improve whole codebase 
 make industry standard store the all hyperparameter store.
 
-my project name: weave.init('rudraprasadbhuyan-ugie/qwen-coder-python-fim') # 🐝
+my project name: weave.init('521er1007-national-institute-of-technology-rourkela/qwen-coder-python-fim') # 🐝
 every run have a id don;t leave it random.
 
 # Ensure that your wandb API key is available at: https://wandb.ai/authorize
