@@ -1,5 +1,5 @@
 """
-src/train_lora.py
+src/training/train_lora.py
 LoRA fine-tuning of Qwen2.5-Coder-0.5B on a Python FIM dataset.
 
 Workflow:
@@ -11,7 +11,7 @@ Workflow:
   6. Log all hyperparameters, metrics, and artifacts to Weights & Biases + Weave.
 
 On Kaggle: called from notebooks/kaggle_wandb.ipynb or kaggle_train.ipynb.
-Locally:   python src/train_lora.py  (dry-run: verifies config, no actual training)
+Locally:   python src/training/train_lora.py  (dry-run: verifies config, no actual training)
 
 Run ID format (deterministic, never random):
     {model_slug}-lora-r{r}-e{epochs}-ds{dataset_version}-{YYYYMMDD}-a{attempt}
@@ -37,10 +37,22 @@ from trl import SFTConfig
 
 # ── Config loader ─────────────────────────────────────────────────────────────
 
-def load_config(config_path: str = "configs/lora.yaml") -> dict:
+def load_config(config_path: str = "configs/training/lora.yaml") -> dict:
     """Load YAML config and return as a plain dict."""
     with open(config_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _deep_merge(base: dict, overrides: dict) -> dict:
+    """Recursively merge `overrides` onto a copy of `base`. Nested dicts are
+    merged key-by-key; any other value type is replaced outright."""
+    merged = dict(base)
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
 
 
 # ── Run ID builder ────────────────────────────────────────────────────────────
@@ -60,9 +72,9 @@ def build_run_id(cfg: dict) -> str:
         lora            — training method (always lora)
         r{r}            — LoRA rank (e.g. r16)
         e{epochs}       — number of training epochs (e.g. e3)
-        ds{version}     — dataset version from configs/lora.yaml wandb.dataset_version
+        ds{version}     — dataset version from configs/training/lora.yaml wandb.dataset_version
         {YYYYMMDD}      — today's date (UTC)
-        a{attempt}      — attempt/run number from configs/lora.yaml wandb.attempt
+        a{attempt}      — attempt/run number from configs/training/lora.yaml wandb.attempt
     """
     model_name: str = cfg["model"]["name"]
     lora_r: int = cfg["lora"]["r"]
@@ -299,7 +311,10 @@ def _load_with_peft(cfg: dict):
 
 # ── Main training function ────────────────────────────────────────────────────
 
-def train(config_path: str = "configs/lora.yaml") -> Any | None:
+def train(
+    config_path: str = "configs/training/lora.yaml",
+    overrides: dict | None = None,
+) -> Any | None:
     """
     Full LoRA training run driven entirely by the YAML config.
     Call this from the Kaggle notebook.
@@ -307,12 +322,22 @@ def train(config_path: str = "configs/lora.yaml") -> Any | None:
     W&B + Weave tracking is enabled automatically if WANDB_API_KEY is set.
     If the key is not set, training proceeds normally without any tracking.
 
+    Args:
+        config_path: Path to the base YAML config (unchanged hyperparameters).
+        overrides:   Optional dict deep-merged onto the loaded config before
+                     use — e.g. {"data": {"path": ...}, "training": {"seed": ...},
+                     "output": {"hf_repo": ...}}. Used by
+                     scripts/run_pilot_experiment.py to sweep dataset variant /
+                     seed / output repo without duplicating lora.yaml per run.
+
     Returns:
         The active wandb.Run if W&B is enabled, else None.
         Pass this to run_evaluation(wandb_run=...) to log eval metrics
         into the same W&B run.
     """
     cfg = load_config(config_path)
+    if overrides:
+        cfg = _deep_merge(cfg, overrides)
 
     # ── Build deterministic run ID ────────────────────────────────────────────
     run_id = build_run_id(cfg)
@@ -495,7 +520,7 @@ def train(config_path: str = "configs/lora.yaml") -> Any | None:
 if __name__ == "__main__":
     # Dry-run: verify config loads and dataset parses without launching training.
     # Real training is invoked from notebooks/kaggle_wandb.ipynb on Kaggle.
-    cfg = load_config("configs/lora.yaml")
+    cfg = load_config("configs/training/lora.yaml")
     run_id = build_run_id(cfg)
     print("Config loaded OK:")
     print(f"  model          : {cfg['model']['name']}")
@@ -505,5 +530,5 @@ if __name__ == "__main__":
     print(f"  run id         : {run_id}")
     print(f"  wandb project  : {cfg.get('wandb', {}).get('project', '(not set)')}")
     print("\nTo actually train, run from the Kaggle notebook:")
-    print("  from src.train_lora import train")
-    print("  train(config_path='configs/lora.yaml')")
+    print("  from src.training.train_lora import train")
+    print("  train(config_path='configs/training/lora.yaml')")

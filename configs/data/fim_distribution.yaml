@@ -1,0 +1,30 @@
+# configs/data/fim_distribution.yaml
+# Stage 1 FIM generation: span-type distribution for the "planned" variant,
+# and shared sampling limits for both variants. Driven entirely by this file —
+# never hardcoded in src/fim/*.
+
+source:
+  # Curated 10k-file sample produced by scripts/build_sample.py
+  hf_dataset_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+
+output:
+  hf_dataset_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+  configs:
+    random: "random"
+    planned: "planned"
+
+sampling:
+  total_examples: 20000        # target example count per variant
+  max_spans_per_file: 8        # cap so no single large file dominates a variant
+  seed: 42
+
+# Starting distribution from the research plan §8.3. Percentages must sum to 100.
+planned_distribution:
+  line: 20
+  expression: 15
+  statement: 20
+  block: 15
+  function-body: 15
+  method-body: 10
+  class-level: 3
+  api-call: 2

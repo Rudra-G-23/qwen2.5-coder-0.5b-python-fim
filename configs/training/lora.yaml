@@ -1,4 +1,4 @@
-# configs/lora.yaml
+# configs/training/lora.yaml
 # All hyperparameters for the LoRA run.
 # Change values here — never hardcode them in training scripts.
 

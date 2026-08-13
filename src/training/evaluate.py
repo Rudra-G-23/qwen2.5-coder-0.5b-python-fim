@@ -1,5 +1,5 @@
 """
-src/evaluate.py
+src/training/evaluate.py
 Compare the base Qwen2.5-Coder-0.5B against the LoRA fine-tuned adapter
 on a held-out FIM dataset.
 
@@ -13,7 +13,7 @@ Metrics used:
     edit_similarity — 1 − normalised Levenshtein distance  (0..1, higher = better)
 
 Usage (from Kaggle notebook, after training):
-    from src.evaluate import run_evaluation
+    from src.training.evaluate import run_evaluation
     run_evaluation(
         base_model_name="Qwen/Qwen2.5-Coder-0.5B",
         adapter_path="/kaggle/working/checkpoints/lora_adapter",

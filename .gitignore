@@ -220,6 +220,7 @@ __marimo__/
 
 # Project-specific: generated data and results (large files, not for version control)
 data/
+!configs/data/
 results/
 merged_model/
 *.gguf

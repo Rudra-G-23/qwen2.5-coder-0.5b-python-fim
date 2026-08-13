@@ -1,5 +1,5 @@
 """
-src/safim_eval.py
+src/training/safim_eval.py
 Execution-based pass@1 evaluation on the Python subset of SAFIM
 (Syntax-Aware Fill-in-the-Middle: https://huggingface.co/datasets/gonglinyuan/safim).
 
@@ -14,7 +14,7 @@ Each run is sandboxed with a wall-clock timeout and CPU/memory rlimits, but
 that is not a substitute for process isolation.
 
 Usage (from a Kaggle notebook, after training):
-    from src.safim_eval import run_safim_evaluation
+    from src.training.safim_eval import run_safim_evaluation
     run_safim_evaluation(
         base_model_name="Qwen/Qwen2.5-Coder-0.5B",
         adapter_path="/kaggle/working/checkpoints/lora_adapter",
@@ -36,7 +36,7 @@ from typing import Any
 import pandas as pd
 import torch
 
-from src.evaluate import generate_completion, load_model
+from src.training.evaluate import generate_completion, load_model
 
 MASK_TOKEN = "{{completion}}"
 
@@ -176,7 +176,7 @@ def run_safim_evaluation(
     """
     Execution-based pass@1: Base vs LoRA-FT on SAFIM's Python subset.
 
-    Logs to the same W&B run as src.evaluate.run_evaluation, under the
+    Logs to the same W&B run as src.training.evaluate.run_evaluation, under the
     eval/safim/* namespace, so it shows up side by side with the exact-match /
     edit-similarity metrics from your own held-out FIM dataset.
     """

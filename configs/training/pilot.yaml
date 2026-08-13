@@ -1,0 +1,29 @@
+# configs/training/pilot.yaml
+# Stage 1 pilot comparison: random vs. planned FIM distribution.
+# Kept separate from lora.yaml so the shared hyperparameters in lora.yaml stay
+# untouched — only what varies per pilot run (seed, dataset variant, output
+# repo) lives here. scripts/run_pilot_experiment.py deep-merges one entry's
+# overrides onto configs/training/lora.yaml per run via train_lora.train().
+
+base_config: "configs/training/lora.yaml"
+
+# 2-3 seeds per variant — a 10k-file result is a pilot signal, not conclusive,
+# and seed variance must be distinguishable from distribution effect.
+seeds:
+  - 42
+  - 123
+  - 7
+
+variants:
+  random:
+    dataset_hf_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+    dataset_config: "random"
+    output_hf_repo: "Rudra-G-23/qwen-coder-python-fim-random"
+  planned:
+    dataset_hf_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+    dataset_config: "planned"
+    output_hf_repo: "Rudra-G-23/qwen-coder-python-fim-planned"
+
+wandb:
+  project: "521er1007-national-institute-of-technology-rourkela/qwen-coder-python-fim"
+  job_type: "train"
