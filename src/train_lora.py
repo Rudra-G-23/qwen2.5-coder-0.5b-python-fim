@@ -20,6 +20,7 @@ Run ID format (deterministic, never random):
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -89,6 +90,31 @@ def build_run_id(cfg: dict) -> str:
     return run_id
 
 
+# ── Small helpers ────────────────────────────────────────────────────────────
+
+def _file_sha256(path: str, chunk_size: int = 1 << 20) -> str:
+    """Hash a file's bytes so a W&B run can be tied to the exact data it trained on."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
+
+
+def _resolve_model_revision(model_name: str) -> str:
+    """Best-effort exact commit SHA for the base model on the HF Hub."""
+    try:
+        from huggingface_hub import HfApi
+
+        return HfApi().model_info(model_name).sha or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _gpu_type() -> str:
+    return torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu"
+
+
 # ── W&B + Weave initialisation ────────────────────────────────────────────────
 
 def init_wandb(cfg: dict, run_id: str) -> Any | None:
@@ -145,9 +171,17 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
         "training/lr_scheduler_type": cfg["training"]["lr_scheduler_type"],
         "training/fp16": cfg["training"]["fp16"],
         "training/seed": cfg["training"]["seed"],
+        "training/optim": cfg["training"].get("optim", "adamw_torch"),
         # data
         "data/path": cfg["data"]["path"],
         "data/train_split": cfg["data"]["train_split"],
+        "data/sha256": (
+            _file_sha256(cfg["data"]["path"]) if os.path.exists(cfg["data"]["path"]) else "unknown"
+        ),
+        # exact model provenance — pins the run to the precise HF revision trained on
+        "model/revision": _resolve_model_revision(cfg["model"]["name"]),
+        # compute
+        "compute/gpu_type": _gpu_type(),
         # wandb metadata
         "run/attempt": wandb_cfg.get("attempt", 1),
         "run/dataset_version": str(wandb_cfg.get("dataset_version", "v1")),
@@ -328,6 +362,7 @@ def train(config_path: str = "configs/lora.yaml") -> Any | None:
         warmup_steps=t["warmup_steps"],
         lr_scheduler_type=t["lr_scheduler_type"],
         fp16=t["fp16"],
+        optim=t.get("optim", "adamw_torch"),
         logging_steps=t["logging_steps"],
         save_steps=t["save_steps"],
         eval_steps=t["eval_steps"],
@@ -365,12 +400,19 @@ def train(config_path: str = "configs/lora.yaml") -> Any | None:
     torch.save = _patched_torch_save
 
     # ── 6. Train ──────────────────────────────────────────────────────────────
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats()
+
     print("\n▶  Starting training…")
     result = trainer.train()
     print(f"\n✓ Training complete")
     print(f"  Training loss : {result.training_loss:.4f}")
     print(f"  Runtime       : {result.metrics.get('train_runtime', 0):.0f}s")
     print(f"  Samples/sec   : {result.metrics.get('train_samples_per_second', 0):.1f}")
+
+    peak_vram_mb = (
+        torch.cuda.max_memory_allocated() / 1024 / 1024 if torch.cuda.is_available() else 0.0
+    )
 
     # ── 7. Save adapter (NOT the full model) ──────────────────────────────────
     adapter_path = Path(output_dir) / "lora_adapter"
@@ -393,6 +435,9 @@ def train(config_path: str = "configs/lora.yaml") -> Any | None:
             "train/samples_per_second": result.metrics.get("train_samples_per_second", 0),
             "adapter/size_mb": adapter_size_mb,
             "adapter/path": str(adapter_path),
+            "compute/wall_clock_s": result.metrics.get("train_runtime", 0),
+            "compute/peak_vram_mb": peak_vram_mb,
+            "compute/gpu_type": _gpu_type(),
         })
 
     # ── 9. Push adapter to Hugging Face ───────────────────────────────────────
@@ -411,10 +456,34 @@ def train(config_path: str = "configs/lora.yaml") -> Any | None:
     hf_url = f"https://huggingface.co/{hf_repo}"
     print(f"✓ Adapter pushed → {hf_url}")
 
-    # Log HF URL to W&B run summary
+    # Log HF URL + a lightweight model artifact to W&B.
+    # The adapter weights themselves live on HF (see hf_repo above) — the W&B
+    # artifact only tracks metadata + a reference, never the weight files.
     if wandb_run is not None:
         import wandb
+
         wandb.summary["hf_repo_url"] = hf_url
+
+        artifact = wandb.Artifact(
+            name=f"{run_id}-adapter",
+            type="model",
+            description=f"LoRA adapter for {cfg['model']['name']} — Python FIM (weights on HF, not W&B)",
+            metadata={
+                "hf_repo": hf_repo,
+                "hf_url": hf_url,
+                "adapter_size_mb": adapter_size_mb,
+                "base_model": cfg["model"]["name"],
+                "lora_r": cfg["lora"]["r"],
+                "lora_alpha": cfg["lora"]["alpha"],
+                "lora_dropout": cfg["lora"]["dropout"],
+                "target_modules": cfg["lora"]["target_modules"],
+                "epochs": cfg["training"]["num_epochs"],
+                "train_loss_final": result.training_loss,
+            },
+        )
+        artifact.add_reference(f"https://huggingface.co/{hf_repo}", name="hf_repo")
+        wandb_run.log_artifact(artifact)
+
         wandb_run.finish()
         print(f"\n✓ W&B run finished → {wandb_run.url}")
 

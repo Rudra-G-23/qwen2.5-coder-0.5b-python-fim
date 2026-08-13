@@ -31,6 +31,7 @@ training:
   eval_steps: 100
   seed: 42
   fp16: true                         # T4/P100 support fp16 natively
+  optim: "adamw_torch"               # optimizer name — logged to W&B config
 
 data:
   path: "data/fim_dataset.jsonl"
