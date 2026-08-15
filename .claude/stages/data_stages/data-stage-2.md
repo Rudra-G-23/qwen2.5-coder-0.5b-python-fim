@@ -42,8 +42,17 @@ actually build to make curation/experiment progress visible.
   10k-sample pilot result doesn't automatically carry over — `experiment/`
   re-runs the comparison at full scale before `python_random_distributed_data/`
   is generated from whichever variant wins.
-- **New repo name**: working name `the-stack-v3-python-fim-data`, to be
-  finalized by the user at repo-creation time.
+- **New repo name — RESOLVED (2026-08-15)**: `Rudra-G-23/the-stack-v3-python-fim-data`.
+  `sample_filtered_data_10000/` and `experiment/{random_data,distributed_data}/`
+  (this doc's §2 tree, minus the full-corpus folders) are implemented against
+  this repo — `configs/data/stack_v3_filter.yaml`,
+  `configs/data/fim_distribution.yaml`, `scripts/build_sample.py`,
+  `scripts/generate_fim_variants.py`, `scripts/migrate_sample_to_new_repo.py`,
+  and `notebooks/stack_v3_data_pull/*.ipynb`. Migrating the actual data and
+  running the two generation notebooks is still manual (Rudra runs them with
+  his own `HF_TOKEN`) — see
+  `.claude/dicussions/2026-08-15-stage2-sample-migration.md`. The other three
+  items below remain open; none of this touches them.
 - **`python_random_distributed_data/` naming**: this folder will only ever
   hold one variant's data (whichever wins the pilot decision above), but its
   name says "random_distributed" regardless of which one wins. Rename it to
@@ -75,27 +84,33 @@ actually build to make curation/experiment progress visible.
 ## 2. Repo / folder structure
 
 ```
-the-stack-v3-python-fim-data/            (new HF dataset repo)
-├── sample_filtered_data_10000/          # Stage 1 pilot sample, carried over as historical record
-│   ├── data/
+the-stack-v3-python-fim-data/            (HF dataset repo — Rudra-G-23/the-stack-v3-python-fim-data)
+├── sample_filtered_data_10000/          # Stage 1 pilot sample — IMPLEMENTED 2026-08-15
+│   ├── data/                            #   chunk_*.parquet, migrated from the old flat repo
+│   ├── checkpoints/                     #   checkpoint_*.json (added to this tree — the original
+│   │                                    #   sketch omitted it; this is where real resume state lives)
 │   └── metadata.json
-├── checkpoint/                          # full-corpus streaming resume state
+├── checkpoint/                          # full-corpus streaming resume state — NOT YET BUILT (§1)
 │   ├── checkpoint_*.json                # per-chunk resume markers (same shape as Stage 1)
 │   └── seen_hashes.*                    # persisted exact-dedup hash set (new, see §3)
-├── experiment/                          # full-scale re-run of the random-vs-planned comparison
+├── experiment/                          # 10k-sample-scale random-vs-planned generation —
+│   │                                    # IMPLEMENTED 2026-08-15 (full-scale re-run over
+│   │                                    # python_filtered_data/ is still §1/§5.3, NOT this)
 │   ├── random_data/
 │   │   ├── data/
+│   │   ├── checkpoints/                 #   empty — single-pass generation, nothing to resume
 │   │   └── metadata.json
-│   └── distributed_data/
+│   └── distributed_data/                # "distributed" = the planned/fixed-percentage variant
 │       ├── data/
+│       ├── checkpoints/                 #   empty, same reason as above
 │       └── metadata.json
-├── python_filtered_data/                # full-corpus curated pool (no 10k cap)
+├── python_filtered_data/                # full-corpus curated pool (no 10k cap) — NOT YET BUILT
 │   ├── data/
 │   └── metadata.json
 ├── python_random_distributed_data/      # winning variant's FIM examples, scaled to full pool
-│   ├── data/                            # winner TBD — see §1
+│   ├── data/                            # winner TBD — see §1 — NOT YET BUILT
 │   └── metadata.json
-└── model_data/                          # final train-ready split
+└── model_data/                          # final train-ready split — NOT YET BUILT
     ├── train/
     ├── test/
     ├── validate/
@@ -246,13 +261,22 @@ repo → install CPU-only deps → HF token from Kaggle Secrets → call into
 `scripts/` → display the generated report). All logic stays in `scripts/`
 and `src/`; notebooks are controllers only.
 
-1. **Full-scale filtering** — update `curate_and_checkpoint.ipynb` for the
-   uncapped `target.files` and new repo layout.
-2. **Random-variant experiment** — new notebook, calls the §5.3 random path.
-3. **Distributed-variant experiment** — new notebook, calls the §5.3 planned
-   path.
+1. **10k-sample filtering/migration — IMPLEMENTED**:
+   `notebooks/stack_v3_data_pull/sample_filtered_data_10000.ipynb` (migrates
+   the old flat-repo sample, then confirms it against the new repo/prefix via
+   `scripts/build_sample.py`). Full-scale filtering (uncapped `target.files`
+   over the whole corpus, extending `curate_and_checkpoint.ipynb`) is
+   separate, still not built, still gated behind §1's scale decision.
+2. **Random-variant experiment — IMPLEMENTED** (10k-sample scale):
+   `notebooks/stack_v3_data_pull/random_data_10000.ipynb`, calls
+   `scripts/generate_fim_variants.py --variant random`. The full-scale
+   §5.3 re-run over `python_filtered_data/` is separate future work.
+3. **Distributed-variant experiment — IMPLEMENTED** (10k-sample scale):
+   `notebooks/stack_v3_data_pull/distributed_data_10000.ipynb`, calls
+   `scripts/generate_fim_variants.py --variant planned`. Same full-scale
+   caveat as #2.
 4. **Model data split** — new notebook, calls the §5.5 splitter once §1's
-   winner decision is made.
+   winner decision is made. Not started.
 
 ## 7. Monitoring — decided
 

@@ -52,6 +52,14 @@ secrets:
     - '(?i)password\s*=\s*[''"]?\S{8,}'
 
 checkpoint:
-  hf_dataset_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+  # the-stack-v3-python-fim-data (data-stage-2.md §1-2): structured repo,
+  # this stage's data/checkpoints live under sample_filtered_data_10000/.
+  # Historical flat-repo data lived in Rudra-G-23/qwen-coder-python-fim-data —
+  # scripts/migrate_sample_to_new_repo.py moves it here.
+  hf_dataset_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
+  path_prefix: "sample_filtered_data_10000"
   chunk_filename_template: "chunk_shard{shard_index:04d}_row{row_start}-{row_end}.parquet"
   checkpoint_filename_template: "checkpoint_{chunk_id}.json"
+
+wandb:
+  project: "qwen-coder-python-fim"

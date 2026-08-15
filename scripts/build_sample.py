@@ -36,6 +36,7 @@ import yaml
 from huggingface_hub import HfApi
 
 from src.curation import checkpoint as ckpt
+from src.curation import wandb_logger
 from src.curation.stream_source import collect_chunk, iter_stack_v3_repos
 from src.dedup.exact_dedup import ExactDedup
 
@@ -47,9 +48,11 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
-def _resume_state(hf_repo: str, token: str | None) -> tuple[int, int, int, ExactDedup]:
+def _resume_state(
+    hf_repo: str, token: str | None, path_prefix: str
+) -> tuple[int, int, int, ExactDedup]:
     """Returns (start_shard_index, start_row_offset, cumulative_collected, dedup)."""
-    checkpoints = ckpt.load_all_checkpoints(hf_repo, token=token)
+    checkpoints = ckpt.load_all_checkpoints(hf_repo, token=token, path_prefix=path_prefix)
     resume = ckpt.pick_resume_checkpoint(checkpoints)
     if resume is None:
         return 0, 0, 0, ExactDedup()
@@ -68,18 +71,24 @@ def _write_and_upload_chunk(
     hf_repo: str,
     chunk_id: str,
     chunk_filename: str,
+    path_prefix: str,
     cumulative_files_collected: int,
     token: str | None,
+    wandb_run,
 ) -> None:
+    # Full in-repo path — stored as-is in the checkpoint's chunk_file so
+    # rebuild_seen_hashes/chunk_exists don't need their own path_prefix param.
+    path_in_repo = f"{path_prefix}/data/{chunk_filename}" if path_prefix else chunk_filename
+
     table = pa.Table.from_pylist(chunk.records)
     local_path = f"/tmp/{chunk_filename}"
     pq.write_table(table, local_path)
 
     api = HfApi(token=token)
-    if not ckpt.chunk_exists(hf_repo, chunk_filename, token=token):
+    if not ckpt.chunk_exists(hf_repo, path_in_repo, token=token):
         api.upload_file(
             path_or_fileobj=local_path,
-            path_in_repo=chunk_filename,
+            path_in_repo=path_in_repo,
             repo_id=hf_repo,
             repo_type="dataset",
             token=token,
@@ -88,31 +97,54 @@ def _write_and_upload_chunk(
 
     checkpoint = ckpt.build_checkpoint(
         chunk_id=chunk_id,
-        chunk_file=chunk_filename,
+        chunk_file=path_in_repo,
         shard_index=chunk.shard_index,
         row_offset=chunk.row_offset,
         files_collected_this_chunk=len(chunk.records),
         raw_files_scanned_this_chunk=chunk.raw_files_scanned,
         filter_stats=chunk.filter_stats,
         cumulative_files_collected=cumulative_files_collected,
+        quality_reject_by_reason=chunk.quality_reject_by_reason,
     )
-    ckpt.upload_checkpoint(hf_repo, checkpoint, token=token)
+    ckpt.upload_checkpoint(hf_repo, checkpoint, token=token, path_prefix=path_prefix)
+
+    wandb_logger.log_chunk(
+        wandb_run,
+        step=chunk.shard_index,
+        filter_stats=chunk.filter_stats,
+        quality_reject_by_reason=chunk.quality_reject_by_reason,
+        raw_files_scanned_this_chunk=chunk.raw_files_scanned,
+        cumulative_files_collected=cumulative_files_collected,
+        cumulative_bytes_collected=chunk.bytes_collected,
+    )
 
 
 def run_session(config: dict, max_gb: float, token: str | None) -> None:
     hf_repo = config["checkpoint"]["hf_dataset_repo"]
+    path_prefix = config["checkpoint"].get("path_prefix", "")
     target_files = config["target"]["files"]
     chunk_size = config["target"]["chunk_size"]
     max_bytes = max_gb * BYTES_PER_GB
+    source_meta = {"dataset": config["source"]["dataset"], "split": config["source"]["split"]}
 
-    shard_index, row_offset, cumulative_collected, dedup = _resume_state(hf_repo, token)
+    shard_index, row_offset, cumulative_collected, dedup = _resume_state(
+        hf_repo, token, path_prefix
+    )
     print(f"Resuming at shard_index={shard_index}, row_offset={row_offset}, "
           f"cumulative_files_collected={cumulative_collected}")
 
     if cumulative_collected >= target_files:
         print(f"Target of {target_files} files already reached. Nothing to do.")
-        ckpt.write_filter_report(hf_repo, token=token)
+        ckpt.write_filter_report(hf_repo, token=token, path_prefix=path_prefix)
+        ckpt.write_metadata_json(hf_repo, path_prefix, source_meta, token=token)
         return
+
+    wandb_run = wandb_logger.init_curation_run(
+        project=config.get("wandb", {}).get("project", "qwen-coder-python-fim"),
+        run_id=f"curation-{hf_repo.split('/')[-1]}-{path_prefix or 'root'}",
+        group=path_prefix or hf_repo,
+        tags=["data-curation", path_prefix] if path_prefix else ["data-curation"],
+    )
 
     repo_iterator = iter_stack_v3_repos(
         config["source"]["dataset"], config["source"]["split"], row_offset=row_offset
@@ -146,7 +178,7 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
             shard_index=shard_index, row_start=row_start, row_end=row_offset
         )
         _write_and_upload_chunk(
-            chunk, hf_repo, chunk_id, chunk_filename, cumulative_collected, token
+            chunk, hf_repo, chunk_id, chunk_filename, path_prefix, cumulative_collected, token, wandb_run
         )
 
         print(
@@ -156,7 +188,11 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
         )
         shard_index += 1
 
-    ckpt.write_filter_report(hf_repo, token=token)
+    ckpt.write_filter_report(hf_repo, token=token, path_prefix=path_prefix)
+    ckpt.write_metadata_json(hf_repo, path_prefix, source_meta, token=token)
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
     if cumulative_collected >= target_files:
         print(f"\n✓ Target reached: {cumulative_collected} files collected.")
@@ -191,8 +227,13 @@ if __name__ == "__main__":
     hf_token = os.environ.get("HF_TOKEN")
 
     if args.report_only:
-        path = ckpt.write_filter_report(cfg["checkpoint"]["hf_dataset_repo"], token=hf_token)
+        report_repo = cfg["checkpoint"]["hf_dataset_repo"]
+        report_prefix = cfg["checkpoint"].get("path_prefix", "")
+        path = ckpt.write_filter_report(report_repo, token=hf_token, path_prefix=report_prefix)
         print(f"✓ Report written → {path}")
+        meta_source = {"dataset": cfg["source"]["dataset"], "split": cfg["source"]["split"]}
+        meta_path = ckpt.write_metadata_json(report_repo, report_prefix, meta_source, token=hf_token)
+        print(f"✓ metadata.json written → {meta_path}")
     else:
         if args.max_gb is None:
             raise SystemExit("--max-gb is required unless --report-only is set.")

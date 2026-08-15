@@ -38,10 +38,13 @@ def build_checkpoint(
     raw_files_scanned_this_chunk: int,
     filter_stats: dict[str, int],
     cumulative_files_collected: int,
+    quality_reject_by_reason: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     """Build a checkpoint dict matching .claude/data-v1.md §4's schema, plus
     `chunk_file` — the exact parquet filename this checkpoint corresponds to,
-    so resume doesn't have to re-derive it from row ranges."""
+    so resume doesn't have to re-derive it from row ranges. `quality_reject_by_reason`
+    (data-stage-2.md §3) is optional and defaults to empty — historical
+    checkpoints written before this field existed simply omit it."""
     return {
         "chunk_id": chunk_id,
         "chunk_file": chunk_file,
@@ -50,29 +53,45 @@ def build_checkpoint(
         "files_collected_this_chunk": files_collected_this_chunk,
         "raw_files_scanned_this_chunk": raw_files_scanned_this_chunk,
         "filter_stats": dict(filter_stats),
+        "quality_reject_by_reason": dict(quality_reject_by_reason or {}),
         "cumulative_files_collected": cumulative_files_collected,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ── Path-prefix helper ─────────────────────────────────────────────────────────
+
+
+def _checkpoint_dir(path_prefix: str) -> str:
+    """Where checkpoint_*.json files live in the repo. Empty prefix (the
+    default) preserves the original flat-repo-root layout unchanged."""
+    return f"{path_prefix}/checkpoints" if path_prefix else ""
+
+
+def _with_dir(dirname: str, filename: str) -> str:
+    return f"{dirname}/{filename}" if dirname else filename
 
 
 # ── Listing + resume ──────────────────────────────────────────────────────────
 
 
 def list_checkpoint_files(
-    repo_id: str, token: str | None = None, repo_type: str = "dataset"
+    repo_id: str, token: str | None = None, repo_type: str = "dataset", path_prefix: str = ""
 ) -> list[str]:
     api = HfApi(token=token)
     files = api.list_repo_files(repo_id, repo_type=repo_type)
-    return sorted(
-        f for f in files if f.startswith(CHECKPOINT_PREFIX) and f.endswith(CHECKPOINT_SUFFIX)
-    )
+    checkpoint_dir = _checkpoint_dir(path_prefix)
+    prefix = f"{checkpoint_dir}/{CHECKPOINT_PREFIX}" if checkpoint_dir else CHECKPOINT_PREFIX
+    return sorted(f for f in files if f.startswith(prefix) and f.endswith(CHECKPOINT_SUFFIX))
 
 
 def load_all_checkpoints(
-    repo_id: str, token: str | None = None, repo_type: str = "dataset"
+    repo_id: str, token: str | None = None, repo_type: str = "dataset", path_prefix: str = ""
 ) -> list[dict[str, Any]]:
     checkpoints = []
-    for filename in list_checkpoint_files(repo_id, token=token, repo_type=repo_type):
+    for filename in list_checkpoint_files(
+        repo_id, token=token, repo_type=repo_type, path_prefix=path_prefix
+    ):
         local_path = hf_hub_download(
             repo_id=repo_id, filename=filename, repo_type=repo_type, token=token
         )
@@ -136,9 +155,12 @@ def upload_checkpoint(
     checkpoint: dict[str, Any],
     token: str | None = None,
     repo_type: str = "dataset",
+    path_prefix: str = "",
 ) -> None:
     api = HfApi(token=token)
-    filename = f"{CHECKPOINT_PREFIX}{checkpoint['chunk_id']}{CHECKPOINT_SUFFIX}"
+    filename = _with_dir(
+        _checkpoint_dir(path_prefix), f"{CHECKPOINT_PREFIX}{checkpoint['chunk_id']}{CHECKPOINT_SUFFIX}"
+    )
     api.upload_file(
         path_or_fileobj=json.dumps(checkpoint, indent=2, ensure_ascii=False).encode("utf-8"),
         path_in_repo=filename,
@@ -192,11 +214,85 @@ def render_filter_report(checkpoints: list[dict[str, Any]]) -> str:
 
 
 def write_filter_report(
-    repo_id: str, out_path: str = "reports/stage1_filter_report.md", token: str | None = None
+    repo_id: str,
+    out_path: str = "reports/stage1_filter_report.md",
+    token: str | None = None,
+    path_prefix: str = "",
 ) -> Path:
-    checkpoints = load_all_checkpoints(repo_id, token=token)
+    checkpoints = load_all_checkpoints(repo_id, token=token, path_prefix=path_prefix)
     report = render_filter_report(checkpoints)
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(report, encoding="utf-8")
+    return path
+
+
+# ── metadata.json (data-stage-2.md §3) ──────────────────────────────────────
+#
+# One aggregate metadata.json per folder — never a per-row dump. Per-row
+# provenance (content hash, source shard/row, ...) already lives in every
+# curated row's `curation_metadata` inside the parquet files themselves
+# (see stream_source.build_curated_record); this file only explains *why*
+# the folder's counts look the way they do, generated on demand from
+# checkpoint history the same way render_filter_report is.
+
+
+def render_metadata(
+    checkpoints: list[dict[str, Any]], folder: str, source: dict[str, Any]
+) -> dict[str, Any]:
+    """Aggregate the same checkpoint history render_filter_report uses into
+    the data-stage-2.md §3 metadata.json shape. `quality_reject_by_reason`
+    only reflects chunks collected after that field was added to the
+    checkpoint schema — earlier (e.g. original Stage 1) checkpoints simply
+    contribute nothing to it, so the total may undercount older history;
+    `reject_by_stage` has no such gap since it was tracked from the start."""
+    reject_by_stage: dict[str, int] = dict.fromkeys(_STAGE_LABELS, 0)
+    quality_reject_by_reason: dict[str, int] = {}
+    raw_scanned = 0
+    collected = 0
+
+    for checkpoint in checkpoints:
+        raw_scanned += checkpoint.get("raw_files_scanned_this_chunk", 0)
+        collected = max(collected, checkpoint.get("cumulative_files_collected", 0))
+        for stage, count in checkpoint.get("filter_stats", {}).items():
+            reject_by_stage[stage] = reject_by_stage.get(stage, 0) + count
+        for reason, count in checkpoint.get("quality_reject_by_reason", {}).items():
+            quality_reject_by_reason[reason] = quality_reject_by_reason.get(reason, 0) + count
+
+    return {
+        "folder": folder,
+        "stage": "sample filter (10k pilot)",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,
+        "counts": {
+            "raw_files_scanned": raw_scanned,
+            "files_kept": collected,
+            "reject_by_stage": reject_by_stage,
+            "quality_reject_by_reason": quality_reject_by_reason,
+        },
+    }
+
+
+def write_metadata_json(
+    repo_id: str,
+    path_prefix: str,
+    source: dict[str, Any],
+    token: str | None = None,
+    out_path: str | None = None,
+) -> Path:
+    checkpoints = load_all_checkpoints(repo_id, token=token, path_prefix=path_prefix)
+    folder = path_prefix or repo_id
+    metadata = render_metadata(checkpoints, folder=folder, source=source)
+    path = Path(out_path or f"reports/{folder.replace('/', '_')}_metadata.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    api = HfApi(token=token)
+    api.upload_file(
+        path_or_fileobj=str(path),
+        path_in_repo=_with_dir(path_prefix, "metadata.json"),
+        repo_id=repo_id,
+        repo_type="dataset",
+        token=token,
+    )
     return path

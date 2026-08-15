@@ -46,6 +46,7 @@ class FilterResult:
     content_hash_sha256: str | None = None
     license_type: str | None = None
     detected_licenses: list[str] = field(default_factory=list)
+    quality_reason: str | None = None  # QualityDecision.reason, set only on quality_reject
 
 
 def apply_filter_pipeline(
@@ -92,6 +93,7 @@ def apply_filter_pipeline(
             reject_stage="quality_reject",
             license_type=license_decision.license_type,
             detected_licenses=license_decision.detected_licenses,
+            quality_reason=quality.reason,
         )
 
     if scan_for_secrets(content, config["secrets"]["patterns"]):
@@ -166,6 +168,7 @@ class ChunkResult:
     records: list[dict[str, Any]]
     raw_files_scanned: int
     filter_stats: dict[str, int]
+    quality_reject_by_reason: dict[str, int]
     bytes_collected: int
 
 
@@ -190,6 +193,7 @@ def collect_chunk(
     records: list[dict[str, Any]] = []
     raw_scanned = 0
     stats = dict.fromkeys(STAGE_ORDER, 0)
+    quality_reject_by_reason: dict[str, int] = {}
     row_offset = start_row_offset
     bytes_collected = 0
     exhausted = False
@@ -207,6 +211,10 @@ def collect_chunk(
             result = apply_filter_pipeline(file_record, config, dedup)
             if not result.keep:
                 stats[result.reject_stage] += 1
+                if result.reject_stage == "quality_reject" and result.quality_reason:
+                    quality_reject_by_reason[result.quality_reason] = (
+                        quality_reject_by_reason.get(result.quality_reason, 0) + 1
+                    )
                 continue
 
             record = build_curated_record(repo, file_record, result, shard_index, row_offset)
@@ -231,6 +239,7 @@ def collect_chunk(
             records=records,
             raw_files_scanned=raw_scanned,
             filter_stats=stats,
+            quality_reject_by_reason=quality_reject_by_reason,
             bytes_collected=bytes_collected,
         ),
         exhausted,

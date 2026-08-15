@@ -22,6 +22,7 @@ from __future__ import annotations
 import ast
 import json
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -373,4 +374,106 @@ def write_natural_distribution_report(
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+# ── Experiment-stage reporting (data-stage-2.md §3, §7) ─────────────────────
+# scripts/generate_fim_variants.py calls these once a variant's FIM records
+# are sampled — separate from the natural-distribution report above, which
+# runs before sampling.
+
+
+def count_by_fim_type(records: Iterable[dict[str, Any]]) -> dict[str, int]:
+    """Span-type counts across a variant's already-sampled FIM records —
+    what actually ended up in the output, not the pre-sampling pool."""
+    counts: dict[str, int] = {}
+    for record in records:
+        span_type = record["fim_type"]
+        counts[span_type] = counts.get(span_type, 0) + 1
+    return counts
+
+
+def plot_bucket_distribution(
+    random_counts: dict[str, int],
+    planned_counts: dict[str, int],
+    output_dir: str = "reports/plots",
+) -> Path:
+    """
+    Grouped bar chart, random vs planned/distributed span-type counts side
+    by side — data-stage-2.md §7's explicit chart choice (bar, not pie, for
+    comparing several categories at a glance). Plain matplotlib only, no
+    seaborn/pandas — this runs from the lightweight CPU-only experiment
+    notebooks, not the GPU training ones that already depend on those.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    span_types = sorted(set(random_counts) | set(planned_counts))
+    random_vals = [random_counts.get(t, 0) for t in span_types]
+    planned_vals = [planned_counts.get(t, 0) for t in span_types]
+
+    x = range(len(span_types))
+    width = 0.38
+
+    _fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar([i - width / 2 for i in x], random_vals, width, label="random")
+    ax.bar([i + width / 2 for i in x], planned_vals, width, label="distributed (planned)")
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(span_types, rotation=30, ha="right")
+    ax.set_ylabel("FIM examples")
+    ax.set_title("Span-type distribution — random vs distributed variant")
+    ax.legend()
+    plt.tight_layout()
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "bucket_distribution.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    return out_path
+
+
+def render_experiment_metadata(
+    folder_name: str,
+    records: list[dict[str, Any]],
+    sampling_cfg: dict[str, Any],
+    shortfall: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """Aggregate metadata.json for one experiment/{folder_name}/ folder
+    (`folder_name` is e.g. "random_data" or "distributed_data" — the HF
+    folder name, not the internal random/planned code) — counts + config,
+    never a per-row dump (data-stage-2.md §3; per-row fim_type/content_id/
+    span metadata already lives on every record in the parquet file
+    itself)."""
+    return {
+        "folder": f"experiment/{folder_name}",
+        "stage": "FIM variant generation (10k pilot sample)",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "variant": folder_name,
+        "sampling_config": dict(sampling_cfg),
+        "counts": {
+            "total_examples": len(records),
+            "by_fim_type": count_by_fim_type(records),
+        },
+        "shortfall_vs_target": dict(shortfall or {}),
+        "checkpoints": (
+            "empty — generation is a single in-memory pass over the 10k-file "
+            "sample (minutes, not hours), nothing to resume"
+        ),
+    }
+
+
+def write_experiment_metadata_json(
+    folder_name: str,
+    records: list[dict[str, Any]],
+    sampling_cfg: dict[str, Any],
+    shortfall: dict[str, int] | None = None,
+    out_path: str | None = None,
+) -> Path:
+    metadata = render_experiment_metadata(folder_name, records, sampling_cfg, shortfall)
+    path = Path(out_path or f"reports/experiment_{folder_name}_metadata.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return path

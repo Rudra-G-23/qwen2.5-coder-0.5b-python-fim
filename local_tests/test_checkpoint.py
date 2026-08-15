@@ -155,3 +155,75 @@ class TestRenderFilterReport:
     def test_empty_checkpoints_no_division_by_zero(self):
         report = ckpt.render_filter_report([])
         assert "n/a" in report
+
+
+@pytest.fixture
+def fake_hub_prefixed(tmp_path, monkeypatch):
+    """Same shape as `fake_hub`, but checkpoint/data files live under
+    myprefix/checkpoints/ and myprefix/data/ — mirrors the new
+    sample_filtered_data_10000/ layout (data-stage-2.md §2)."""
+    checkpoint_0 = ckpt.build_checkpoint(
+        chunk_id="chunk_0000",
+        chunk_file="myprefix/data/chunk_shard0000_row0-2.parquet",
+        shard_index=0,
+        row_offset=2,
+        files_collected_this_chunk=2,
+        raw_files_scanned_this_chunk=5,
+        filter_stats={"language_reject": 3},
+        cumulative_files_collected=2,
+        quality_reject_by_reason={"ast_invalid": 1},
+    )
+    checkpoint_0_path = tmp_path / "checkpoint_chunk_0000.json"
+    checkpoint_0_path.write_text(json.dumps(checkpoint_0))
+
+    files_in_repo = [
+        "myprefix/checkpoints/checkpoint_chunk_0000.json",
+        "checkpoint_unrelated_at_root.json",  # must NOT be picked up when path_prefix="myprefix"
+    ]
+    local_paths = {"myprefix/checkpoints/checkpoint_chunk_0000.json": checkpoint_0_path}
+
+    def fake_hf_hub_download(repo_id, filename, repo_type="dataset", token=None):
+        return str(local_paths[filename])
+
+    monkeypatch.setattr(ckpt, "HfApi", lambda token=None: FakeHfApi(files_in_repo))
+    monkeypatch.setattr(ckpt, "hf_hub_download", fake_hf_hub_download)
+
+    return {"checkpoint_0": checkpoint_0}
+
+
+class TestPathPrefix:
+    def test_list_checkpoint_files_scoped_to_prefix(self, fake_hub_prefixed):
+        files = ckpt.list_checkpoint_files("fake/repo", path_prefix="myprefix")
+        assert files == ["myprefix/checkpoints/checkpoint_chunk_0000.json"]
+
+    def test_load_all_checkpoints_scoped_to_prefix(self, fake_hub_prefixed):
+        checkpoints = ckpt.load_all_checkpoints("fake/repo", path_prefix="myprefix")
+        assert len(checkpoints) == 1
+        assert checkpoints[0]["chunk_id"] == "chunk_0000"
+
+    def test_default_prefix_is_flat_repo_root(self, fake_hub):
+        # fake_hub's files sit at repo root with no prefix — path_prefix=""
+        # (the default) must still find them, preserving old behavior.
+        files = ckpt.list_checkpoint_files("fake/repo")
+        assert files == ["checkpoint_chunk_0000.json", "checkpoint_chunk_0001.json"]
+
+
+class TestRenderMetadata:
+    def test_aggregates_reject_by_stage_and_quality_reasons(self, fake_hub_prefixed):
+        checkpoints = ckpt.load_all_checkpoints("fake/repo", path_prefix="myprefix")
+        metadata = ckpt.render_metadata(
+            checkpoints,
+            folder="myprefix",
+            source={"dataset": "HuggingFaceCode/stack-v3-train", "split": "train"},
+        )
+        assert metadata["folder"] == "myprefix"
+        assert metadata["counts"]["raw_files_scanned"] == 5
+        assert metadata["counts"]["files_kept"] == 2
+        assert metadata["counts"]["reject_by_stage"]["language_reject"] == 3
+        assert metadata["counts"]["quality_reject_by_reason"] == {"ast_invalid": 1}
+
+    def test_empty_checkpoints_produce_zeroed_counts(self):
+        metadata = ckpt.render_metadata([], folder="empty", source={})
+        assert metadata["counts"]["raw_files_scanned"] == 0
+        assert metadata["counts"]["files_kept"] == 0
+        assert metadata["counts"]["quality_reject_by_reason"] == {}

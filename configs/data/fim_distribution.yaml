@@ -4,14 +4,22 @@
 # never hardcoded in src/fim/*.
 
 source:
-  # Curated 10k-file sample produced by scripts/build_sample.py
-  hf_dataset_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+  # Curated 10k-file sample, migrated into the-stack-v3-python-fim-data
+  # under sample_filtered_data_10000/data/ (data-stage-2.md §1-2).
+  hf_dataset_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
+  path_prefix: "sample_filtered_data_10000"
 
 output:
-  hf_dataset_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+  hf_dataset_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
+  # config-name (parquet filename) per variant — folder-name mapping to
+  # experiment/random_data/ and experiment/distributed_data/ lives in
+  # scripts/generate_fim_variants.py's FOLDER_NAME, not here.
   configs:
     random: "random"
-    planned: "planned"
+    planned: "distributed"
+
+wandb:
+  project: "qwen-coder-python-fim"
 
 sampling:
   total_examples: 20000        # target example count per variant

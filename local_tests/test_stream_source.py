@@ -79,6 +79,7 @@ class TestApplyFilterPipeline:
         )
         assert result.keep is False
         assert result.reject_stage == "quality_reject"
+        assert result.quality_reason == "ast_invalid"
 
     def test_secret_rejected(self):
         result = apply_filter_pipeline(
@@ -198,6 +199,22 @@ class TestCollectChunk:
         )
         assert chunk.filter_stats["language_reject"] == 1
         assert chunk.raw_files_scanned == 2
+
+    def test_quality_reject_by_reason_counted(self):
+        repo = self._repo(1, "r1")
+        repo["files"].append(
+            _good_python_file(content_id="bad", content="def foo(:\n    pass\n" * 5, size_bytes=100)
+        )
+        chunk, _ = collect_chunk(
+            repo_iterator=iter([repo]),
+            config=CONFIG,
+            dedup=ExactDedup(),
+            chunk_size=10,
+            start_row_offset=0,
+            shard_index=0,
+        )
+        assert chunk.filter_stats["quality_reject"] == 1
+        assert chunk.quality_reject_by_reason == {"ast_invalid": 1}
 
     def test_max_bytes_remaining_stops_collection(self):
         repo = self._repo(5, "r1")
