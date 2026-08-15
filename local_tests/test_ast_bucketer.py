@@ -15,7 +15,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.fim.ast_bucketer import bucket_spans, span_to_prefix_suffix_middle
+from src.fim.ast_bucketer import (
+    bucket_spans,
+    measure_natural_distribution,
+    render_natural_distribution_report,
+    span_to_prefix_suffix_middle,
+    write_natural_distribution_report,
+)
 
 SAMPLE_SOURCE = '''
 import requests
@@ -180,3 +186,47 @@ class TestSpanToPrefixSuffixMiddle:
             structural_position="module_level",
         )
         assert span_to_prefix_suffix_middle(source, span) is None
+
+
+class TestNaturalDistribution:
+    """Coverage for the natural span-type frequency measurement — added to
+    compare against distribution_planned.py's hand-set percentages, which
+    are a starting hypothesis, not a derived value."""
+
+    def test_measure_counts_match_bucket_spans(self):
+        files = [{"content_id": "f0", "content": SAMPLE_SOURCE}]
+        counts = measure_natural_distribution(files)
+        assert sum(counts.values()) == len(bucket_spans(SAMPLE_SOURCE))
+        assert set(counts) <= {
+            "line", "expression", "statement", "block",
+            "function-body", "method-body", "class-level", "api-call",
+        }
+
+    def test_measure_skips_unparseable_files(self):
+        files = [
+            {"content_id": "good", "content": SAMPLE_SOURCE},
+            {"content_id": "bad", "content": "def broken(:\n"},
+        ]
+        counts = measure_natural_distribution(files)
+        assert sum(counts.values()) == len(bucket_spans(SAMPLE_SOURCE))
+
+    def test_render_report_percentages_sum_to_100(self):
+        files = [{"content_id": "f0", "content": SAMPLE_SOURCE}]
+        counts = measure_natural_distribution(files)
+        report = render_natural_distribution_report(counts, planned_distribution={"line": 20})
+        assert abs(sum(report["natural_percent"].values()) - 100) < 0.01
+        assert report["planned_distribution"] == {"line": 20}
+        assert report["natural_counts"] == counts
+
+    def test_write_report_creates_file(self, tmp_path):
+        files = [{"content_id": "f0", "content": SAMPLE_SOURCE}]
+        out_path = tmp_path / "natural_span_distribution.json"
+        result_path = write_natural_distribution_report(
+            files, planned_distribution={"line": 20}, out_path=str(out_path)
+        )
+        assert result_path == out_path
+        assert out_path.exists()
+
+        import json
+        saved = json.loads(out_path.read_text(encoding="utf-8"))
+        assert saved["natural_counts"] == measure_natural_distribution(files)

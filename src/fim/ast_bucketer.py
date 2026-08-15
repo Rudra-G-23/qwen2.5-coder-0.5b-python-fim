@@ -3,7 +3,7 @@ src/fim/ast_bucketer.py
 Stage 1 §6: tag every valid FIM span in a Python source file with a bucket
 type, required by both distribution_random.py and distribution_planned.py.
 
-Bucket types (per .claude/data-v1.md §6):
+Bucket types (per .claude/stages/data/data-stage-1.md §6):
     line / expression / statement / block / function-body / method-body /
     class-level / api-call
 
@@ -20,7 +20,9 @@ Two heuristics worth calling out (AST alone can't resolve either exactly):
 from __future__ import annotations
 
 import ast
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 # expr node types substantial enough to be a useful FIM "expression" span —
@@ -330,3 +332,45 @@ def build_fim_record(
         "structural_position": span.structural_position,
         "span_line_count": span.end_line - span.start_line + 1,
     }
+
+
+def measure_natural_distribution(files: Iterable[dict[str, str]]) -> dict[str, int]:
+    """Span-type counts across the full bucketed pool, unweighted by any
+    sampling target — the corpus's natural span-type frequency. Used to
+    compare against distribution_planned.py's hand-set percentages, which are
+    a starting hypothesis rather than a derived value (see that module's
+    docstring)."""
+    counts: dict[str, int] = {}
+    for _content_id, _content, span in iter_bucketed_files(files):
+        counts[span.span_type] = counts.get(span.span_type, 0) + 1
+    return counts
+
+
+def render_natural_distribution_report(
+    natural_counts: dict[str, int], planned_distribution: dict[str, float]
+) -> dict[str, Any]:
+    """Pair the measured natural distribution with the planned targets, so
+    the two can be compared directly rather than one being asserted without
+    the other."""
+    total = sum(natural_counts.values()) or 1
+    natural_percent = {
+        span_type: round(100 * count / total, 2) for span_type, count in natural_counts.items()
+    }
+    return {
+        "natural_counts": natural_counts,
+        "natural_percent": natural_percent,
+        "planned_distribution": planned_distribution,
+    }
+
+
+def write_natural_distribution_report(
+    files: Iterable[dict[str, str]],
+    planned_distribution: dict[str, float],
+    out_path: str = "reports/natural_span_distribution.json",
+) -> Path:
+    natural_counts = measure_natural_distribution(files)
+    report = render_natural_distribution_report(natural_counts, planned_distribution)
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    return path

@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ import yaml
 from datasets import load_dataset
 from huggingface_hub import HfApi
 
+from src.fim.ast_bucketer import write_natural_distribution_report
 from src.fim.distribution_planned import sample_planned
 from src.fim.distribution_random import sample_random
 
@@ -63,10 +65,31 @@ def push_variant(
     os.remove(local_path)
 
 
+def report_natural_distribution(files: list[dict[str, str]], planned_distribution: dict[str, float]) -> None:
+    """Print the corpus's natural span-type frequency next to the hand-set
+    planned percentages, so the gap between them is visible before training —
+    not just asserted. Counting/rendering logic lives in
+    src.fim.ast_bucketer.write_natural_distribution_report (mirrors how
+    src.curation.checkpoint.write_filter_report keeps report logic in src/,
+    not scripts/)."""
+    report_path = write_natural_distribution_report(files, planned_distribution)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    natural_counts, natural_pct = report["natural_counts"], report["natural_percent"]
+
+    print("\nNatural span-type distribution (unweighted, before sampling):")
+    for span_type in sorted(natural_counts, key=natural_counts.get, reverse=True):
+        planned_pct = planned_distribution.get(span_type)
+        planned_note = f" (planned target: {planned_pct}%)" if planned_pct is not None else " (not in planned_distribution)"
+        print(f"  {span_type:<15} {natural_counts[span_type]:>8} spans  {natural_pct[span_type]:>5.2f}%{planned_note}")
+    print(f"  → written to {report_path}")
+
+
 def run(config: dict, source_repo: str | None, token: str | None) -> None:
     hf_source_repo = source_repo or config["source"]["hf_dataset_repo"]
     files = load_curated_files(hf_source_repo, token)
     print(f"Loaded {len(files)} curated files from {hf_source_repo}")
+
+    report_natural_distribution(files, config["planned_distribution"])
 
     sampling = config["sampling"]
 

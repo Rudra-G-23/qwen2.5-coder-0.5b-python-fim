@@ -2,17 +2,30 @@
 src/fim/distribution_planned.py
 Stage 1 §6 Variant B: sample FIM spans per the fixed planned distribution
 (20% line / 15% expression / 20% statement / 15% block / 15% function-body /
-10% method-body / 3% class-level / 2% api-call, from the research plan §8.3
-via configs/data/fim_distribution.yaml), from the same bucketed pool as
+10% method-body / 3% class-level / 2% api-call, defined in
+configs/data/fim_distribution.yaml), from the same bucketed pool as
 distribution_random.py.
+
+These percentages are a hand-set starting hypothesis, not a value derived
+from measurement or literature — the pilot experiment (data-stage-1.md §7-8)
+is what's meant to validate or falsify it, by comparing this variant's
+downstream SAFIM result against both distribution_random.py's uniform
+baseline and the corpus's own natural span-type frequency (see
+scripts/generate_fim_variants.py's natural-distribution report).
 """
 
 from __future__ import annotations
 
 import random
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from src.fim.ast_bucketer import Span, build_fim_record, iter_bucketed_files, span_to_prefix_suffix_middle
+from src.fim.ast_bucketer import (
+    Span,
+    build_fim_record,
+    iter_bucketed_files,
+    span_to_prefix_suffix_middle,
+)
 
 
 def sample_planned(

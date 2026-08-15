@@ -18,7 +18,10 @@ sampling:
   max_spans_per_file: 8        # cap so no single large file dominates a variant
   seed: 42
 
-# Starting distribution from the research plan §8.3. Percentages must sum to 100.
+# Hand-set starting distribution (a hypothesis, not a derived value — see
+# data-stage-1.md §6-8 and distribution_planned.py's module docstring for
+# how the pilot experiment is meant to validate or falsify it). Percentages
+# must sum to 100.
 planned_distribution:
   line: 20
   expression: 15

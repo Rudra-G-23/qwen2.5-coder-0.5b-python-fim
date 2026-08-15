@@ -314,6 +314,7 @@ def _load_with_peft(cfg: dict):
 def train(
     config_path: str = "configs/training/lora.yaml",
     overrides: dict | None = None,
+    finish_wandb: bool = True,
 ) -> Any | None:
     """
     Full LoRA training run driven entirely by the YAML config.
@@ -329,6 +330,16 @@ def train(
                      "output": {"hf_repo": ...}}. Used by
                      scripts/run_pilot_experiment.py to sweep dataset variant /
                      seed / output repo without duplicating lora.yaml per run.
+        finish_wandb: Whether to call wandb_run.finish() before returning.
+                     Default True (existing behavior). Pass False when a
+                     caller needs to log more into this same run afterward
+                     (e.g. run_pilot_experiment.py logging SAFIM eval results)
+                     — logging into an already-finished run is silently
+                     dropped by the W&B SDK, not an error, so this must be
+                     set BEFORE calling run_evaluation()/run_safim_evaluation()
+                     with this run, not worked around after the fact. The
+                     caller then owns calling wandb_run.finish() itself once
+                     all logging for this run is done.
 
     Returns:
         The active wandb.Run if W&B is enabled, else None.
@@ -471,7 +482,7 @@ def train(
     if not hf_token:
         print("\n⚠  HF_TOKEN not set — skipping Hugging Face push.")
         print("   Set os.environ['HF_TOKEN'] before calling train() to enable push.")
-        if wandb_run is not None:
+        if wandb_run is not None and finish_wandb:
             wandb_run.finish()
         return wandb_run
 
@@ -509,8 +520,11 @@ def train(
         artifact.add_reference(f"https://huggingface.co/{hf_repo}", name="hf_repo")
         wandb_run.log_artifact(artifact)
 
-        wandb_run.finish()
-        print(f"\n✓ W&B run finished → {wandb_run.url}")
+        if finish_wandb:
+            wandb_run.finish()
+            print(f"\n✓ W&B run finished → {wandb_run.url}")
+        else:
+            print(f"\n✓ W&B run still open (caller will finish it) → {wandb_run.url}")
 
     return wandb_run
 
