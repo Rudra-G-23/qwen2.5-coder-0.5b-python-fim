@@ -77,9 +77,11 @@ actually build to make curation/experiment progress visible.
      valid only if that timeline is genuinely acceptable.
   This document does not pick one for you — resolve it before §5.1 work
   starts.
-- **`seen_hashes` persistence timing**: whether this ships before the first
-  full-corpus streaming run starts, or is retrofitted after. Likely resolved
-  together with the Kaggle-vs-persistent-machine decision above.
+- **`seen_hashes` persistence timing**: RESOLVED (2026-08-15) — shipped ahead
+  of the first full-corpus run, generically (prefix-parameterized, so it
+  applies to whatever `path_prefix` §5.1's build eventually uses, not
+  hardcoded to the pilot sample). See §4 for what actually got built and why
+  it deviates from that section's original "update per chunk" fix direction.
 
 ## 2. Repo / folder structure
 
@@ -92,7 +94,10 @@ the-stack-v3-python-fim-data/            (HF dataset repo — Rudra-G-23/the-sta
 │   └── metadata.json
 ├── checkpoint/                          # full-corpus streaming resume state — NOT YET BUILT (§1)
 │   ├── checkpoint_*.json                # per-chunk resume markers (same shape as Stage 1)
-│   └── seen_hashes.*                    # persisted exact-dedup hash set (new, see §3)
+│   └── seen_hashes.json                 # persisted exact-dedup hash set — mechanism already
+│                                         # built + live under sample_filtered_data_10000/checkpoints/
+│                                         # (§4); this folder just needs build_sample.py's
+│                                         # target.files cap removed and path_prefix repointed here
 ├── experiment/                          # 10k-sample-scale random-vs-planned generation —
 │   │                                    # IMPLEMENTED 2026-08-15 (full-scale re-run over
 │   │                                    # python_filtered_data/ is still §1/§5.3, NOT this)
@@ -222,16 +227,34 @@ is instant; at full-corpus scale, spread across many Kaggle 12-hour
 sessions, this rebuild cost grows linearly with total history collected so
 far and will eventually dominate session startup time.
 
-**Fix direction**: persist the hash set itself as an artifact in
-`checkpoint/seen_hashes.*`, updated **per chunk** — the same granularity
-`checkpoint_*.json` already uses, right after each chunk's parquet is
-durably uploaded — not once per session. If it only flushed at session end,
-a session killed by Kaggle's time limit or a crash would silently lose that
-session's hash updates, reopening the door to re-admitted duplicates on the
-next resume even though the corresponding chunk data was already uploaded.
-Exact format (flat binary of digests vs. a compact set-serialization) and
-whether this ships before or after the first full-corpus run starts is an
-open decision (§1).
+**IMPLEMENTED 2026-08-15** (`src/curation/checkpoint.py`'s
+`save_seen_hashes`/`load_seen_hashes`, wired into `scripts/build_sample.py`'s
+`run_session`) — deviates from this section's original "update per chunk"
+fix direction, on purpose:
+
+Flushing `seen_hashes.json` on *every* chunk means re-uploading the *entire*
+current hash set on every chunk, since HF has no append — that set only
+grows, so total bytes moved across a full-corpus run would scale with
+(chunks × final-set-size), potentially worse than the every-resume rebuild
+this is meant to replace. Instead: `save_seen_hashes` is called **once per
+session** (same call sites as `write_filter_report`/`write_metadata_json`),
+tagged with the `(shard_index, row_offset)` of the last checkpoint it
+accounts for. On resume, `load_seen_hashes` reads that cached set and, if
+it's behind the actual resume point (a session was killed mid-run after
+checkpointing a chunk but before it could flush), re-derives *only the
+missing tail* from checkpoint history via a shared `_download_hashes`
+helper — never the full history, and never silently — checkpoint history
+is always the authority for that gap, so no duplicate can be re-admitted.
+Net effect: a resume costs at most a handful of chunk downloads (the
+unflushed tail of one interrupted session) instead of either the full
+historical rebuild (old behavior) or re-uploading a growing blob every
+chunk (the original fix direction above).
+
+Also fixed alongside this: `scripts/build_sample.py` was calling
+`ckpt.chunk_exists()` (a full `list_repo_files` call) once per chunk upload
+— same "cost grows with total repo size, not session size" problem as the
+hash rebuild. Now lists the repo once per session and checks membership
+against an in-memory set, updated locally after each upload.
 
 ## 5. Pipeline stages
 

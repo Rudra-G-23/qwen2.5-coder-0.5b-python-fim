@@ -50,19 +50,26 @@ def load_config(config_path: str) -> dict:
 
 def _resume_state(
     hf_repo: str, token: str | None, path_prefix: str
-) -> tuple[int, int, int, ExactDedup]:
-    """Returns (start_shard_index, start_row_offset, cumulative_collected, dedup)."""
+) -> tuple[int, int, int, ExactDedup, tuple[int, int] | None]:
+    """Returns (start_shard_index, start_row_offset, cumulative_collected,
+    dedup, latest_checkpoint_key). latest_checkpoint_key is
+    (shard_index, row_offset) of the most recent checkpoint this dedup set
+    is known to fully account for, or None if there's no checkpoint history
+    yet — run_session threads it through to save_seen_hashes at the end."""
     checkpoints = ckpt.load_all_checkpoints(hf_repo, token=token, path_prefix=path_prefix)
     resume = ckpt.pick_resume_checkpoint(checkpoints)
     if resume is None:
-        return 0, 0, 0, ExactDedup()
+        return 0, 0, 0, ExactDedup(), None
 
-    seen_hashes = ckpt.rebuild_seen_hashes(hf_repo, checkpoints, resume, token=token)
+    seen_hashes = ckpt.load_seen_hashes(
+        hf_repo, checkpoints, resume, path_prefix=path_prefix, token=token
+    )
     return (
         resume["shard_index"] + 1,
         resume["row_offset"],
         resume["cumulative_files_collected"],
         ExactDedup(seen_hashes),
+        (resume["shard_index"], resume["row_offset"]),
     )
 
 
@@ -75,6 +82,7 @@ def _write_and_upload_chunk(
     cumulative_files_collected: int,
     token: str | None,
     wandb_run,
+    existing_files: set[str],
 ) -> None:
     # Full in-repo path — stored as-is in the checkpoint's chunk_file so
     # rebuild_seen_hashes/chunk_exists don't need their own path_prefix param.
@@ -84,8 +92,12 @@ def _write_and_upload_chunk(
     local_path = f"/tmp/{chunk_filename}"
     pq.write_table(table, local_path)
 
+    # existing_files is fetched once per session (run_session) instead of
+    # re-listing the whole repo on every chunk (ckpt.chunk_exists) — at
+    # thousands of chunks, one list_repo_files call per chunk makes each
+    # chunk slower than the last as the repo grows.
     api = HfApi(token=token)
-    if not ckpt.chunk_exists(hf_repo, path_in_repo, token=token):
+    if path_in_repo not in existing_files:
         api.upload_file(
             path_or_fileobj=local_path,
             path_in_repo=path_in_repo,
@@ -93,6 +105,7 @@ def _write_and_upload_chunk(
             repo_type="dataset",
             token=token,
         )
+        existing_files.add(path_in_repo)
     os.remove(local_path)
 
     checkpoint = ckpt.build_checkpoint(
@@ -127,7 +140,7 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
     max_bytes = max_gb * BYTES_PER_GB
     source_meta = {"dataset": config["source"]["dataset"], "split": config["source"]["split"]}
 
-    shard_index, row_offset, cumulative_collected, dedup = _resume_state(
+    shard_index, row_offset, cumulative_collected, dedup, latest_key = _resume_state(
         hf_repo, token, path_prefix
     )
     print(f"Resuming at shard_index={shard_index}, row_offset={row_offset}, "
@@ -137,6 +150,8 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
         print(f"Target of {target_files} files already reached. Nothing to do.")
         ckpt.write_filter_report(hf_repo, token=token, path_prefix=path_prefix)
         ckpt.write_metadata_json(hf_repo, path_prefix, source_meta, token=token)
+        if latest_key is not None:
+            ckpt.save_seen_hashes(hf_repo, path_prefix, dedup.seen_hashes, *latest_key, token=token)
         return
 
     wandb_run = wandb_logger.init_curation_run(
@@ -149,6 +164,12 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
     repo_iterator = iter_stack_v3_repos(
         config["source"]["dataset"], config["source"]["split"], row_offset=row_offset
     )
+
+    # Listed once per session instead of once per chunk (see
+    # _write_and_upload_chunk) — a per-chunk list_repo_files call makes each
+    # successive chunk slower to upload as the repo grows into the
+    # thousands of chunks a multi-million-file corpus implies.
+    existing_files = set(HfApi(token=token).list_repo_files(hf_repo, repo_type="dataset"))
 
     bytes_used_this_session = 0.0
     exhausted = False
@@ -178,8 +199,10 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
             shard_index=shard_index, row_start=row_start, row_end=row_offset
         )
         _write_and_upload_chunk(
-            chunk, hf_repo, chunk_id, chunk_filename, path_prefix, cumulative_collected, token, wandb_run
+            chunk, hf_repo, chunk_id, chunk_filename, path_prefix, cumulative_collected,
+            token, wandb_run, existing_files,
         )
+        latest_key = (chunk.shard_index, chunk.row_offset)
 
         print(
             f"  chunk {chunk_id}: +{len(chunk.records)} files "
@@ -190,6 +213,8 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
 
     ckpt.write_filter_report(hf_repo, token=token, path_prefix=path_prefix)
     ckpt.write_metadata_json(hf_repo, path_prefix, source_meta, token=token)
+    if latest_key is not None:
+        ckpt.save_seen_hashes(hf_repo, path_prefix, dedup.seen_hashes, *latest_key, token=token)
 
     if wandb_run is not None:
         wandb_run.finish()

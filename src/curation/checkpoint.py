@@ -21,6 +21,7 @@ from typing import Any
 
 import pyarrow.parquet as pq
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
 CHECKPOINT_PREFIX = "checkpoint_"
 CHECKPOINT_SUFFIX = ".json"
@@ -108,6 +109,28 @@ def pick_resume_checkpoint(checkpoints: list[dict[str, Any]]) -> dict[str, Any] 
     return max(checkpoints, key=lambda c: (c["shard_index"], c["row_offset"]))
 
 
+def _download_hashes(
+    repo_id: str, checkpoints: list[dict[str, Any]], token: str | None, repo_type: str
+) -> set[str]:
+    """Download each checkpoint's chunk parquet file and pull its content
+    hashes out of curation_metadata. Shared by rebuild_seen_hashes (full
+    history) and load_seen_hashes's delta path (only the chunks written
+    since the last saved seen_hashes.json) — the expensive part either way
+    is this per-chunk download+read, so keeping it in one place matters."""
+    seen: set[str] = set()
+    for checkpoint in checkpoints:
+        local_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=checkpoint["chunk_file"],
+            repo_type=repo_type,
+            token=token,
+        )
+        table = pq.read_table(local_path, columns=["curation_metadata"])
+        for row in table.column("curation_metadata").to_pylist():
+            seen.add(row["content_hash_sha256"])
+    return seen
+
+
 def rebuild_seen_hashes(
     repo_id: str,
     checkpoints: list[dict[str, Any]],
@@ -119,25 +142,111 @@ def rebuild_seen_hashes(
     Rebuild the exact-dedup hash set from every chunk parquet file at or
     before the resume point, so a resumed session can't re-admit a duplicate
     a prior session already collected.
+
+    This re-downloads and re-reads *every* historical chunk every time it's
+    called — fine at a handful of chunks, but becomes the dominant cost of
+    starting a new session once the corpus spans thousands of chunks. Prefer
+    load_seen_hashes, which caches this result and only falls back to a full
+    rebuild here when no cache exists yet.
     """
     resume_key = (resume_checkpoint["shard_index"], resume_checkpoint["row_offset"])
-    seen: set[str] = set()
+    relevant = [
+        c for c in checkpoints if (c["shard_index"], c["row_offset"]) <= resume_key
+    ]
+    return _download_hashes(repo_id, relevant, token, repo_type)
 
-    for checkpoint in checkpoints:
-        if (checkpoint["shard_index"], checkpoint["row_offset"]) > resume_key:
-            continue  # chunk collected after the resume point — not part of history yet
 
+# ── seen_hashes persistence (data-stage-2.md §1's "seen_hashes persistence
+# timing" item) ──────────────────────────────────────────────────────────
+#
+# rebuild_seen_hashes's full re-download-every-resume cost grows with total
+# corpus size, not session size — at millions of files it can end up eating
+# most of a session's time budget before any new streaming even starts.
+# seen_hashes.json caches the set as of a known checkpoint position so a
+# resume only has to re-derive hashes for chunks written *since* that save
+# — normally zero, or the handful from a session that crashed before it
+# could save.
+
+SEEN_HASHES_FILENAME = "seen_hashes.json"
+
+
+def _seen_hashes_path(path_prefix: str) -> str:
+    return _with_dir(_checkpoint_dir(path_prefix), SEEN_HASHES_FILENAME)
+
+
+def save_seen_hashes(
+    repo_id: str,
+    path_prefix: str,
+    hashes: set[str] | frozenset[str],
+    as_of_shard_index: int,
+    as_of_row_offset: int,
+    token: str | None = None,
+    repo_type: str = "dataset",
+) -> None:
+    """Persist the full seen-hash set as of (as_of_shard_index,
+    as_of_row_offset) — the identity of the last checkpoint these hashes
+    fully account for. Called once per session (not once per chunk) from
+    scripts/build_sample.py's run_session, mirroring where
+    write_filter_report/write_metadata_json are already called."""
+    api = HfApi(token=token)
+    payload = {
+        "as_of_shard_index": as_of_shard_index,
+        "as_of_row_offset": as_of_row_offset,
+        "hashes": sorted(hashes),
+    }
+    api.upload_file(
+        path_or_fileobj=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        path_in_repo=_seen_hashes_path(path_prefix),
+        repo_id=repo_id,
+        repo_type=repo_type,
+        token=token,
+    )
+
+
+def load_seen_hashes(
+    repo_id: str,
+    checkpoints: list[dict[str, Any]],
+    resume_checkpoint: dict[str, Any],
+    path_prefix: str = "",
+    token: str | None = None,
+    repo_type: str = "dataset",
+) -> set[str]:
+    """Fast-path resume: read the cached seen_hashes.json instead of
+    re-downloading every historical chunk. Falls back to a full
+    rebuild_seen_hashes() when no cache exists yet (fresh repo, or history
+    that predates this file — e.g. the original Stage 1 checkpoints). If the
+    cache is behind the resume point (a prior session checkpointed a chunk
+    but crashed before it could save), only the missing tail of chunks is
+    re-downloaded and merged in — never the full history."""
+    resume_key = (resume_checkpoint["shard_index"], resume_checkpoint["row_offset"])
+
+    try:
         local_path = hf_hub_download(
             repo_id=repo_id,
-            filename=checkpoint["chunk_file"],
+            filename=_seen_hashes_path(path_prefix),
             repo_type=repo_type,
             token=token,
         )
-        table = pq.read_table(local_path, columns=["curation_metadata"])
-        for row in table.column("curation_metadata").to_pylist():
-            seen.add(row["content_hash_sha256"])
+    except (EntryNotFoundError, RepositoryNotFoundError):
+        return rebuild_seen_hashes(
+            repo_id, checkpoints, resume_checkpoint, token=token, repo_type=repo_type
+        )
 
-    return seen
+    with open(local_path, encoding="utf-8") as f:
+        cached = json.load(f)
+    as_of_key = (cached["as_of_shard_index"], cached["as_of_row_offset"])
+    hashes = set(cached["hashes"])
+
+    if as_of_key >= resume_key:
+        return hashes
+
+    missing = [
+        c
+        for c in checkpoints
+        if as_of_key < (c["shard_index"], c["row_offset"]) <= resume_key
+    ]
+    hashes |= _download_hashes(repo_id, missing, token, repo_type)
+    return hashes
 
 
 # ── Upload (idempotent) ───────────────────────────────────────────────────────

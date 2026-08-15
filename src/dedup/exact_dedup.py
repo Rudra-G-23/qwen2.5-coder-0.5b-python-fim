@@ -35,6 +35,13 @@ class ExactDedup:
     def __len__(self) -> int:
         return len(self._seen)
 
+    @property
+    def seen_hashes(self) -> frozenset[str]:
+        """Snapshot of every hash seen so far — used to persist dedup state
+        at the end of a session (src.curation.checkpoint.save_seen_hashes)
+        instead of re-deriving it from scratch on every resume."""
+        return frozenset(self._seen)
+
     def is_duplicate(self, content_hash: str) -> bool:
         return content_hash in self._seen
 

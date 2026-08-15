@@ -30,6 +30,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
 from huggingface_hub import HfApi, hf_hub_download
+from huggingface_hub.utils import EntryNotFoundError, RepositoryNotFoundError
 
 from src.fim.ast_bucketer import (
     count_by_fim_type,
@@ -59,6 +60,15 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+# Above this many source chunk files, load_curated_files's "load everything
+# into one Python list" approach risks OOM on a CPU-only Kaggle session —
+# see the scaling-risk audit (.claude/dicussions/). 10k-file pilot at
+# chunk_size=1000 is 10 chunks; this threshold gives headroom before
+# warning, not a hard limit — full-corpus generation needs a streaming/
+# reservoir-sampling rewrite of this module, not just a bigger threshold.
+_LARGE_SOURCE_CHUNK_WARNING_THRESHOLD = 50
+
+
 def load_curated_files(
     hf_repo: str, path_prefix: str, token: str | None
 ) -> list[dict[str, str]]:
@@ -66,7 +76,11 @@ def load_curated_files(
     parquet file under `{path_prefix}/data/` in the dataset repo. Non-streaming
     is fine here — the curated sample is capped at 10k files by construction
     (§0's streaming rule applies to the raw stack-v3-train pull, not this
-    already-curated, size-bounded output).
+    already-curated, size-bounded output). This assumption is NOT enforced
+    in code: pointing this at a full-corpus-scale folder will try to hold
+    every file's content in RAM at once and can OOM. See
+    _LARGE_SOURCE_CHUNK_WARNING_THRESHOLD below for the loud-warning
+    tripwire this function prints instead of failing silently.
 
     Reads each chunk file directly with pyarrow instead of
     `datasets.load_dataset("parquet", ...)`: each chunk was written
@@ -83,6 +97,13 @@ def load_curated_files(
         f for f in api.list_repo_files(hf_repo, repo_type="dataset")
         if f.startswith(dir_prefix) and f.endswith(".parquet")
     )
+    if len(parquet_files) > _LARGE_SOURCE_CHUNK_WARNING_THRESHOLD:
+        print(
+            f"⚠  {len(parquet_files)} source chunk files under {dir_prefix or '(repo root)'} — "
+            "well beyond the 10k-file pilot's ~10 chunks. load_curated_files loads every "
+            "file's content into memory at once and can OOM at this scale; if this crashes, "
+            "that's why — see the scaling-risk audit before re-running with a bigger --max-gb."
+        )
 
     records: list[dict[str, str]] = []
     for filename in parquet_files:
@@ -161,13 +182,18 @@ def fetch_other_variant_counts(
     (--variant random or --variant planned) can still produce the full
     random-vs-distributed comparison chart once *both* variants exist,
     however many separate runs that took. Returns None if the sibling
-    hasn't been generated yet — not an error, just "not comparable yet"."""
+    hasn't been generated yet — not an error, just "not comparable yet".
+    Only treats a genuine 404 (file/repo not found) as "not generated yet" —
+    a transient network/auth/rate-limit error propagates instead of being
+    silently swallowed, which previously made the comparison chart appear
+    or "defer" inconsistently across reruns of the exact same completed
+    state."""
     folder = f"experiment/{FOLDER_NAME[variant]}"
     try:
         local_path = hf_hub_download(
             repo_id=hf_repo, filename=f"{folder}/metadata.json", repo_type="dataset", token=token
         )
-    except Exception:
+    except (EntryNotFoundError, RepositoryNotFoundError):
         return None
     metadata = json.loads(Path(local_path).read_text(encoding="utf-8"))
     return metadata.get("counts", {}).get("by_fim_type")
