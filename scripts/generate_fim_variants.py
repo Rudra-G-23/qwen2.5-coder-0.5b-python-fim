@@ -28,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make `src` im
 import pyarrow as pa
 import pyarrow.parquet as pq
 import yaml
-from datasets import load_dataset
 from huggingface_hub import HfApi, hf_hub_download
 
 from src.fim.ast_bucketer import (
@@ -66,12 +65,32 @@ def load_curated_files(
     parquet file under `{path_prefix}/data/` in the dataset repo. Non-streaming
     is fine here — the curated sample is capped at 10k files by construction
     (§0's streaming rule applies to the raw stack-v3-train pull, not this
-    already-curated, size-bounded output)."""
-    data_glob = f"{path_prefix}/data/*.parquet" if path_prefix else "*.parquet"
-    ds = load_dataset(
-        "parquet", data_files=f"hf://datasets/{hf_repo}/{data_glob}", split="train", token=token
+    already-curated, size-bounded output).
+
+    Reads each chunk file directly with pyarrow instead of
+    `datasets.load_dataset("parquet", ...)`: each chunk was written
+    independently (build_sample.py), so PyArrow infers that chunk's schema
+    from its own rows alone — a nullable column (e.g. github_metadata) that's
+    all-None in one chunk comes out typed `null` there but `string` in a
+    chunk with real values. `load_dataset` unifies all files under one
+    schema and errors trying to cast between those two types. Reading only
+    the two columns this needs, per file, sidesteps that entirely — same
+    approach checkpoint.rebuild_seen_hashes already uses for this reason."""
+    api = HfApi(token=token)
+    dir_prefix = f"{path_prefix}/data/" if path_prefix else ""
+    parquet_files = sorted(
+        f for f in api.list_repo_files(hf_repo, repo_type="dataset")
+        if f.startswith(dir_prefix) and f.endswith(".parquet")
     )
-    return [{"content_id": row["content_id"], "content": row["content"]} for row in ds]
+
+    records: list[dict[str, str]] = []
+    for filename in parquet_files:
+        local_path = hf_hub_download(
+            repo_id=hf_repo, filename=filename, repo_type="dataset", token=token
+        )
+        table = pq.read_table(local_path, columns=["content_id", "content"])
+        records.extend(table.to_pylist())
+    return records
 
 
 def push_variant(
