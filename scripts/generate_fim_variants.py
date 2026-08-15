@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make `src` importable
@@ -172,13 +173,13 @@ def fetch_other_variant_counts(
     return metadata.get("counts", {}).get("by_fim_type")
 
 
-def init_wandb_run(project: str, job_type: str, group: str, tags: list[str]):
+def init_wandb_run(project: str, name: str, job_type: str, group: str, tags: list[str]):
     if not os.environ.get("WANDB_API_KEY"):
         print("⚠  WANDB_API_KEY not set — skipping W&B experiment tracking.")
         return None
     import wandb
 
-    return wandb.init(project=project, job_type=job_type, group=group, tags=tags)
+    return wandb.init(project=project, name=name, job_type=job_type, group=group, tags=tags)
 
 
 def run(config: dict, source_repo: str | None, only_variant: str | None, token: str | None) -> None:
@@ -201,6 +202,7 @@ def run(config: dict, source_repo: str | None, only_variant: str | None, token: 
         folder = f"experiment/{FOLDER_NAME[variant]}"
         wandb_run = init_wandb_run(
             wandb_project,
+            name=f"{FOLDER_NAME[variant]}-seed{sampling['seed']}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}",
             job_type=f"experiment-{FOLDER_NAME[variant].replace('_data', '')}",
             group=f"experiment-{sampling['seed']}",
             tags=[variant, FOLDER_NAME[variant]],
