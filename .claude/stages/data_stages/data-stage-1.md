@@ -52,7 +52,7 @@ qwen2.5-coder-0.5b-python-fim/
 │   ├── fim/
 │   │   ├── ast_bucketer.py           # tags spans: line/expr/stmt/block/func/...
 │   │   ├── distribution_random.py
-│   │   └── distribution_planned.py   # 20/15/20/15/15/10/3/2% from research plan §8.3
+│   │   └── distribution_planned.py   # 20/15/20/15/15/10/3/2%, hand-set starting hypothesis (see §6 below)
 │   └── training/
 │       └── train_lora.py
 ├── scripts/
