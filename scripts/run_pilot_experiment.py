@@ -132,7 +132,15 @@ def run(
                     # (variant, seed) without new run-id logic
                     "attempt": seed,
                     "dataset_version": variant["dataset_config"],
-                    "tags": [variant_name, f"seed{seed}"],
+                    # Live filtering during a run: search/filter by any of
+                    # these in the W&B UI. "pilot" separates this phase from
+                    # later fine-tune-approach runs (LoRA/QLoRA on the
+                    # winning variant) landing in the same project.
+                    "tags": ["pilot", variant_name, f"seed{seed}"],
+                    # Groups all of this variant's seeds onto one comparison
+                    # panel in the W&B UI instead of 3 separate ungrouped
+                    # runs — data-stage-2.md §7's flagged monitoring gap.
+                    "group": variant_name,
                 },
             }
             print(f"\n{'=' * 60}\nVariant: {variant_name}   Seed: {seed}\n{'=' * 60}")

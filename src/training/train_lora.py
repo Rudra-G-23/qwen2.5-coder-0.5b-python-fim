@@ -209,6 +209,11 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
         config=flat_cfg,
         tags=wandb_cfg.get("tags", []),
         notes=wandb_cfg.get("notes", ""),
+        # Clusters related runs (e.g. one pilot variant's seeds) onto the
+        # same W&B comparison panel automatically — data-stage-2.md §7's
+        # one identified monitoring gap. None (default) leaves W&B's
+        # ungrouped view, same as before this was added.
+        group=wandb_cfg.get("group"),
     )
 
     # Initialise Weave inside the same W&B run for joint tracing
