@@ -9,17 +9,22 @@ model with the shared hyperparameters in configs/training/lora.yaml
 (untouched) — only training data and seed vary between runs, via
 src.training.train_lora.train()'s `overrides` param.
 
-Known limitation: configs/training/pilot.yaml gives each *variant* one HF
-adapter repo shared across all its seeds (not one repo per seed) — each
-seed's push lands as a new commit in that repo, so only the last seed's
-adapter is on the default branch; earlier seeds are only recoverable by HF
-commit SHA. This doesn't affect the pilot comparison itself (SAFIM eval runs
-immediately on each seed's local adapter, right after that seed's training,
-before the next seed's push can touch it) — it only affects re-fetching a
-specific past seed's adapter from HF later. Fixing it means deciding a new
-per-seed repo naming scheme, which is a naming decision for you to make, not
-something to silently invent here (data-stage-2.md §1 reserves naming
-decisions the same way).
+Both variants push into ONE shared HF model repo
+(configs/training/pilot.yaml's output_hf_repo), separated by subfolder
+(output_subfolder, e.g. "experiment/random_model") rather than by repo — see
+data-stage-1.md §7. Future fine-tune approaches on whichever variant wins
+(LoRA, QLoRA, ...) land in the same repo too, under their own subfolders.
+
+Known limitation: each *variant*'s subfolder is shared across all its seeds
+(not one subfolder per seed) — each seed's push lands as a new commit to
+that subfolder, so only the last seed's adapter is on the default branch;
+earlier seeds are only recoverable by HF commit SHA. This doesn't affect the
+pilot comparison itself (SAFIM eval runs immediately on each seed's local
+adapter, right after that seed's training, before the next seed's push can
+touch it) — it only affects re-fetching a specific past seed's adapter from
+HF later. Fixing it means deciding a new per-seed subfolder naming scheme,
+which is a naming decision for you to make, not something to silently invent
+here (data-stage-2.md §1 reserves naming decisions the same way).
 
 Run on Kaggle (GPU required) — see notebooks/kaggle_wandb.ipynb for the
 pattern this reuses; running locally without a GPU will only get as far as
@@ -115,7 +120,10 @@ def run(
             overrides = {
                 "data": {"path": data_path},
                 "training": {"seed": seed},
-                "output": {"hf_repo": variant["output_hf_repo"]},
+                "output": {
+                    "hf_repo": pilot_cfg["output_hf_repo"],
+                    "subfolder": variant["output_subfolder"],
+                },
                 "wandb": {
                     "project": wandb_cfg["project"],
                     "job_type": wandb_cfg.get("job_type", "train"),

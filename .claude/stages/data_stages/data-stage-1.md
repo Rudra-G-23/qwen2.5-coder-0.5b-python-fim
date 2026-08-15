@@ -209,9 +209,34 @@ from the research plan §9.2, even if hardness scoring itself is deferred).
 
 ## 7. Pilot training comparison
 
-Two separate HF model repos (not branches — cleaner for W&B linking and eval comparison):
-- `Rudra-G-23/qwen-coder-python-fim-random`
-- `Rudra-G-23/qwen-coder-python-fim-planned`
+**One shared HF model repo — RESOLVED (2026-08-15)**: `Rudra-G-23/qwen2.5-coder-0.5b-python-fim`,
+not one repo per variant. Both pilot adapters push into it, separated by
+subfolder instead of by repo:
+```
+qwen2.5-coder-0.5b-python-fim/           (HF model repo)
+└── experiment/
+    ├── random_model/       # LoRA adapter + metadata.json, random-variant pilot
+    └── distributed_model/  # LoRA adapter + metadata.json, planned/distributed-variant pilot
+```
+Why one repo: keeping every experiment (and later, every fine-tune approach)
+under one model repo mirrors the data side's convention (one dataset repo,
+subfolders per variant — `the-stack-v3-python-fim-data`) and keeps
+Base-vs-LoRA-FT comparisons, W&B linking, and browsing on HF all under one
+roof instead of split across repos. `output_hf_repo` +
+`variants.<name>.output_subfolder` in `configs/training/pilot.yaml` drive
+this; `train_lora.py`'s `train()` pushes via `HfApi.upload_folder(...,
+path_in_repo=subfolder)` and writes a `metadata.json` (run id, base model,
+LoRA hyperparams, seed, dataset version, final train loss) alongside each
+adapter so every subfolder self-describes.
+
+**Discussion — what comes after the pilot decision**: once §8's
+random-vs-planned comparison picks a winning dataset variant, work continues
+on that *one* dataset with different fine-tuning **approaches** (LoRA, then
+QLoRA, etc.) rather than continuing to vary the dataset. Those runs are a
+new, later addition to the same repo — e.g. under `finetune/<approach>_model/`
+— not a reason to reopen the two-variant comparison. Naming that folder is
+deferred until that phase actually starts (same "don't invent naming ahead
+of need" convention as `data-stage-2.md` §1).
 
 Both runs:
 - Start fresh from `Qwen/Qwen2.5-Coder-0.5B` (no continuation from one another).

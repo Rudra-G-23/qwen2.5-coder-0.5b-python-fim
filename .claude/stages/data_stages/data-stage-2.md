@@ -77,6 +77,14 @@ actually build to make curation/experiment progress visible.
      valid only if that timeline is genuinely acceptable.
   This document does not pick one for you — resolve it before §5.1 work
   starts.
+- **Model repo — RESOLVED (2026-08-15)**: `Rudra-G-23/qwen2.5-coder-0.5b-python-fim`
+  is the single HF *model* repo for both pilot experiment adapters
+  (`experiment/random_model/`, `experiment/distributed_model/`) and, later,
+  every fine-tune approach (LoRA, QLoRA, ...) tried on whichever dataset
+  variant wins — not one model repo per variant/approach. See
+  `data-stage-1.md` §7 for the folder layout and rationale. This is a
+  separate repo from the *data* repo above (`the-stack-v3-python-fim-data`)
+  — one holds curated/FIM data, the other holds trained adapters.
 - **`seen_hashes` persistence timing**: RESOLVED (2026-08-15) — shipped ahead
   of the first full-corpus run, generically (prefix-parameterized, so it
   applies to whatever `path_prefix` §5.1's build eventually uses, not

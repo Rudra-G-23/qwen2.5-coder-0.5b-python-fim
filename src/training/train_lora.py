@@ -478,6 +478,10 @@ def train(
 
     # ── 9. Push adapter to Hugging Face ───────────────────────────────────────
     hf_repo = cfg["output"]["hf_repo"]
+    # subfolder places this run inside a single shared repo (e.g.
+    # "experiment/random_model") instead of giving every variant/approach
+    # its own repo — see data-stage-1.md §7. "" pushes to the repo root.
+    subfolder = cfg["output"].get("subfolder", "")
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
         print("\n⚠  HF_TOKEN not set — skipping Hugging Face push.")
@@ -486,10 +490,41 @@ def train(
             wandb_run.finish()
         return wandb_run
 
-    print(f"\n▶  Pushing adapter to HF: {hf_repo}")
-    model.push_to_hub(hf_repo, token=hf_token)
-    tokenizer.push_to_hub(hf_repo, token=hf_token)
-    hf_url = f"https://huggingface.co/{hf_repo}"
+    # Self-describing folder: a metadata.json alongside the adapter weights,
+    # since a shared repo with multiple subfolders needs each one to carry
+    # its own provenance rather than relying on a repo-level README.
+    metadata = {
+        "run_id": run_id,
+        "base_model": cfg["model"]["name"],
+        "lora": {
+            "r": cfg["lora"]["r"],
+            "alpha": cfg["lora"]["alpha"],
+            "dropout": cfg["lora"]["dropout"],
+        },
+        "training": {"seed": cfg["training"]["seed"], "epochs": cfg["training"]["num_epochs"]},
+        "dataset_version": str(cfg.get("wandb", {}).get("dataset_version", "v1")),
+        "data_path": cfg["data"]["path"],
+        "train_loss_final": result.training_loss,
+        "adapter_size_mb": adapter_size_mb,
+        "trained_at_utc": datetime.utcnow().isoformat() + "Z",
+    }
+    with open(adapter_path / "metadata.json", "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+    from huggingface_hub import HfApi
+
+    dest = f"{hf_repo}/{subfolder}" if subfolder else hf_repo
+    print(f"\n▶  Pushing adapter to HF: {dest}")
+    api = HfApi(token=hf_token)
+    api.create_repo(hf_repo, repo_type="model", exist_ok=True)
+    api.upload_folder(
+        folder_path=str(adapter_path),
+        repo_id=hf_repo,
+        path_in_repo=subfolder,
+        repo_type="model",
+        commit_message=f"{run_id}: push adapter" + (f" → {subfolder}" if subfolder else ""),
+    )
+    hf_url = f"https://huggingface.co/{hf_repo}" + (f"/tree/main/{subfolder}" if subfolder else "")
     print(f"✓ Adapter pushed → {hf_url}")
 
     # Log HF URL + a lightweight model artifact to W&B.

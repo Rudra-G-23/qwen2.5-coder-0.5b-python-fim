@@ -40,7 +40,12 @@ data:
 
 output:
   dir: "/kaggle/working/checkpoints"
-  hf_repo: "Rudra-G-23/qwen2.5-coder-0.5b-python-fim-lora"
+  # Single repo for every experiment + fine-tune model (not one repo per
+  # variant) — see data-stage-1.md §7. subfolder places this run's adapter
+  # inside that repo; "" (default, standalone runs) pushes to repo root.
+  # configs/training/pilot.yaml overrides subfolder per (variant, seed).
+  hf_repo: "Rudra-G-23/qwen2.5-coder-0.5b-python-fim"
+  subfolder: ""
 
 # ── Weights & Biases ─────────────────────────────────────────────────────────
 # Run ID is built deterministically at runtime from the fields below.
