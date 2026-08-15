@@ -95,8 +95,17 @@ watching.
 ## State after this session
 
 113/113 tests pass (101 original + 12 new). Nothing here required a GPU —
-all of it is code/notebook wiring. The next step is entirely on Rudra: run
-`curate_and_checkpoint.ipynb` on Kaggle for real, into the *existing*
-`Rudra-G-23/qwen-coder-python-fim-data` repo (not a new repo — see the
-chat response for why `the-stack-v3-python-fim-data` is a Stage 2 name, not
-Stage 1).
+all of it is code/notebook wiring.
+
+**Correction, checked directly against the live HF repo right after this
+session's commit**: curation is further along than assumed above. The
+`Rudra-G-23/qwen-coder-python-fim-data` repo already has all 10 checkpoint
+chunks and `cumulative_files_collected: 10000` as of 2026-08-14 — curation
+is done, not pending. `python scripts/build_sample.py --report-only`
+confirms: 144,934 raw files scanned, 10,000 collected (93.10% reject rate,
+dominated by the language filter as expected for a multi-language corpus).
+`generate_fim_variants.py` has NOT been run yet (no `random`/`planned` files
+in the repo), and neither pilot output repo
+(`qwen-coder-python-fim-{random,planned}`) exists yet. So the actual next
+step is `scripts/generate_fim_variants.py` (CPU-only, runs locally, no
+Kaggle needed), not another curation session.
