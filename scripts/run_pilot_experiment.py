@@ -25,6 +25,23 @@ touch it) — it only affects re-fetching a specific past seed's adapter from
 HF later. Fixing it means deciding a new per-seed subfolder naming scheme,
 which is a naming decision for you to make, not something to silently invent
 here (data-stage-2.md §1 reserves naming decisions the same way).
+`_find_existing_run_commit` below is what makes that commit-SHA recovery
+path actually get used, instead of being purely manual.
+
+Resume across a Kaggle-session interruption (net drop, compute cutoff): a
+Kaggle session's local disk (/kaggle/working, including
+base_cfg['output']['dir']) does not survive past that session, and
+train_lora.train() always starts a fresh model from the base — there is no
+mid-epoch checkpoint resume. So the unit of resume here is a whole
+(variant, seed) run, not a training step. Before training each (variant,
+seed), `run()` checks HF commit history for a prior successful push whose
+commit message starts with that run's deterministic run_id (train_lora's
+commit_message=f"{run_id}: push adapter..."). If found, training is skipped
+entirely and the adapter is re-downloaded from that exact commit SHA so
+SAFIM eval (whose local results/pilot/... output does NOT survive a session
+restart either) still runs this session — re-running the notebook after an
+interruption costs one HF metadata lookup + adapter download per
+already-done seed, not a GPU re-train.
 
 Run on Kaggle (GPU required) — see notebooks/kaggle_wandb.ipynb for the
 pattern this reuses; running locally without a GPU will only get as far as
@@ -48,11 +65,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make `src` im
 
 import pyarrow.parquet as pq
 import yaml
-from huggingface_hub import hf_hub_download
+from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from src.data_prep import FIM_MIDDLE, FIM_PREFIX, FIM_SUFFIX
 from src.training.safim_eval import run_safim_evaluation
-from src.training.train_lora import train
+from src.training.train_lora import _deep_merge, build_run_id, init_wandb, train
 
 
 def load_config(config_path: str) -> dict:
@@ -90,6 +107,27 @@ def materialize_variant_jsonl(
     return str(out_path)
 
 
+def _find_existing_run_commit(hf_repo: str, run_id: str, token: str | None) -> str | None:
+    """Has this exact (variant, seed) run already trained + pushed, in a
+    prior session? train_lora.train()'s commit_message always starts with
+    f"{run_id}: push adapter..." (run_id is deterministic per (variant, seed)
+    via the attempt=seed / dataset_version=variant overrides below), so a
+    matching commit title is proof that seed's GPU work is already done —
+    safe to skip re-training and just fetch that commit's adapter instead.
+    Returns the commit SHA to fetch from, or None if this run hasn't
+    happened yet (fresh pilot, or a repo/HF hiccup — either way, falling
+    through to a normal training run is the safe default)."""
+    api = HfApi(token=token)
+    try:
+        commits = api.list_repo_commits(hf_repo, repo_type="model")
+    except Exception:
+        return None
+    for commit in commits:
+        if commit.title.startswith(f"{run_id}:"):
+            return commit.commit_id
+    return None
+
+
 def run(
     pilot_cfg: dict,
     token: str | None,
@@ -107,7 +145,8 @@ def run(
             raise SystemExit(f"--variant {only_variant!r} not in pilot config variants: {list(variants)}")
         variants = {only_variant: variants[only_variant]}
 
-    adapter_path = f"{base_cfg['output']['dir']}/lora_adapter"
+    default_adapter_path = f"{base_cfg['output']['dir']}/lora_adapter"
+    output_hf_repo = pilot_cfg["output_hf_repo"]
 
     for variant_name, variant in variants.items():
         if variant_name not in variant_jsonl_cache:
@@ -144,11 +183,39 @@ def run(
                 },
             }
             print(f"\n{'=' * 60}\nVariant: {variant_name}   Seed: {seed}\n{'=' * 60}")
-            # finish_wandb=False: keep this run open so SAFIM eval below logs
-            # live progress into the SAME run instead of a finished one —
-            # wandb silently drops .log() calls made after .finish(), so
-            # this has to be set before train() returns, not patched after.
-            wandb_run = train(config_path=base_config, overrides=overrides, finish_wandb=False)
+
+            merged_cfg = _deep_merge(base_cfg, overrides)
+            run_id = build_run_id(merged_cfg)
+            resume_commit = _find_existing_run_commit(output_hf_repo, run_id, token)
+
+            if resume_commit is not None:
+                # Already trained + pushed in a prior (interrupted) session —
+                # skip the GPU work and fetch that exact seed's adapter back
+                # by commit SHA (see module docstring's "Resume across a
+                # Kaggle-session interruption" note). SAFIM eval still runs
+                # below: its local results/pilot/... output doesn't survive
+                # a session restart, so this session needs it regenerated
+                # even though training doesn't.
+                print(f"✓ Found existing push for run_id={run_id} (commit {resume_commit[:8]}) "
+                      f"— skipping training, re-fetching adapter.")
+                subfolder = variant["output_subfolder"]
+                snapshot_dir = snapshot_download(
+                    repo_id=output_hf_repo,
+                    repo_type="model",
+                    revision=resume_commit,
+                    allow_patterns=f"{subfolder}/*",
+                    token=token,
+                )
+                adapter_path = str(Path(snapshot_dir) / subfolder)
+                wandb_run = init_wandb(merged_cfg, run_id)
+            else:
+                # finish_wandb=False: keep this run open so SAFIM eval below
+                # logs live progress into the SAME run instead of a finished
+                # one — wandb silently drops .log() calls made after
+                # .finish(), so this has to be set before train() returns,
+                # not patched after.
+                wandb_run = train(config_path=base_config, overrides=overrides, finish_wandb=False)
+                adapter_path = default_adapter_path
 
             # SAFIM eval runs on this seed's adapter immediately, before the
             # next seed's train() call overwrites the shared local
