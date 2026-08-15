@@ -25,6 +25,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
@@ -68,8 +69,21 @@ def migrate(old_repo: str, new_repo: str, path_prefix: str, token: str) -> None:
         local_path = hf_hub_download(
             repo_id=old_repo, filename=old_path, repo_type="dataset", token=token
         )
+
+        if subdir == "checkpoints":
+            # `chunk_file` inside the JSON points at the old flat-repo layout
+            # (e.g. "chunk_shard0000_row0-1673.parquet") — rewrite it to the
+            # new nested data/ path so rebuild_seen_hashes/hf_hub_download
+            # resolve correctly post-migration.
+            with open(local_path, encoding="utf-8") as f:
+                data = json.load(f)
+            data["chunk_file"] = f"{path_prefix}/data/{data['chunk_file']}"
+            payload: str | bytes = json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+        else:
+            payload = local_path
+
         api.upload_file(
-            path_or_fileobj=local_path,
+            path_or_fileobj=payload,
             path_in_repo=new_path,
             repo_id=new_repo,
             repo_type="dataset",
