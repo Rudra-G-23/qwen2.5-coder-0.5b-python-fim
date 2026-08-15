@@ -155,7 +155,9 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
         return
 
     wandb_run = wandb_logger.init_curation_run(
-        project=config.get("wandb", {}).get("project", "qwen-coder-python-fim"),
+        project=config.get("wandb", {}).get(
+            "project", "521er1007-national-institute-of-technology-rourkela/stack-v3-python-fim-data"
+        ),
         run_id=f"curation-{hf_repo.split('/')[-1]}-{path_prefix or 'root'}",
         group=path_prefix or hf_repo,
         tags=["data-curation", path_prefix] if path_prefix else ["data-curation"],

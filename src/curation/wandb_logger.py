@@ -1,10 +1,13 @@
 """
 src/curation/wandb_logger.py
-data-stage-2.md §7: thin W&B wrapper for scripts/build_sample.py's per-chunk
-curation loop. Mirrors src/training/train_lora.py's init_wandb — same
-single project (`qwen-coder-python-fim`), same graceful no-op if
-WANDB_API_KEY isn't set, distinguished from training runs by
-`job_type="data-curation"`.
+data-stage-2.md §7: thin W&B + Weave wrapper for scripts/build_sample.py's
+per-chunk curation loop. Mirrors src/training/train_lora.py's init_wandb —
+same graceful no-op if WANDB_API_KEY isn't set, same "entity/project"
+config-string convention, same joint Weave init inside the W&B run —
+distinguished from training runs by `job_type="data-curation"` and by
+using a separate project (`stack-v3-python-fim-data`, all data-curation
+and FIM-generation monitoring — see configs/data/*.yaml's `wandb.project`)
+instead of the training project.
 
 A full-corpus run spans many Kaggle 12-hour sessions, so this uses a fixed
 run id + resume="allow": every session's chunk logs land on one continuous
@@ -18,22 +21,38 @@ from typing import Any
 
 
 def init_curation_run(project: str, run_id: str, group: str, tags: list[str] | None = None) -> Any | None:
-    """Returns the active wandb.Run, or None if WANDB_API_KEY isn't set —
-    curation must work with zero W&B setup, tracking is opt-in."""
+    """Returns the active wandb.Run, or None if WANDB_API_KEY isn't set or
+    wandb/weave aren't installed — curation must work with zero W&B setup,
+    tracking is opt-in. `project` may be "entity/project" (recommended,
+    matches train_lora.py's init_wandb) or a bare project name."""
     if not os.environ.get("WANDB_API_KEY"):
         print("⚠  WANDB_API_KEY not set — skipping W&B curation tracking.")
         return None
 
-    import wandb
+    try:
+        import wandb
+        import weave  # noqa: F401  (imported for side-effect: patch tracing)
+    except ImportError as exc:
+        print(f"⚠  W&B / Weave not installed ({exc}) — skipping curation tracking.")
+        return None
 
-    return wandb.init(
-        project=project,
+    full_project = project
+    if "/" in full_project:
+        entity, bare_project = full_project.split("/", 1)
+    else:
+        entity, bare_project = None, full_project
+
+    run = wandb.init(
+        entity=entity,
+        project=bare_project,
         id=run_id,
         resume="allow",
         job_type="data-curation",
         group=group,
         tags=tags or [],
     )
+    weave.init(full_project)
+    return run
 
 
 def log_chunk(

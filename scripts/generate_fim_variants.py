@@ -200,12 +200,34 @@ def fetch_other_variant_counts(
 
 
 def init_wandb_run(project: str, name: str, job_type: str, group: str, tags: list[str]):
+    """`project` may be "entity/project" (recommended — data-curation and
+    FIM-generation share the `stack-v3-python-fim-data` project, kept
+    separate from training's `qwen-coder-python-fim` one) or a bare project
+    name. Mirrors src/curation/wandb_logger.py's init_curation_run and
+    src/training/train_lora.py's init_wandb — same entity/project split,
+    same joint Weave init inside the W&B run."""
     if not os.environ.get("WANDB_API_KEY"):
         print("⚠  WANDB_API_KEY not set — skipping W&B experiment tracking.")
         return None
-    import wandb
 
-    return wandb.init(project=project, name=name, job_type=job_type, group=group, tags=tags)
+    try:
+        import wandb
+        import weave  # noqa: F401  (imported for side-effect: patch tracing)
+    except ImportError as exc:
+        print(f"⚠  W&B / Weave not installed ({exc}) — skipping experiment tracking.")
+        return None
+
+    full_project = project
+    if "/" in full_project:
+        entity, bare_project = full_project.split("/", 1)
+    else:
+        entity, bare_project = None, full_project
+
+    run = wandb.init(
+        entity=entity, project=bare_project, name=name, job_type=job_type, group=group, tags=tags
+    )
+    weave.init(full_project)
+    return run
 
 
 def run(config: dict, source_repo: str | None, only_variant: str | None, token: str | None) -> None:
@@ -218,7 +240,9 @@ def run(config: dict, source_repo: str | None, only_variant: str | None, token: 
 
     sampling = config["sampling"]
     output_repo = config["output"]["hf_dataset_repo"]
-    wandb_project = config.get("wandb", {}).get("project", "qwen-coder-python-fim")
+    wandb_project = config.get("wandb", {}).get(
+        "project", "521er1007-national-institute-of-technology-rourkela/stack-v3-python-fim-data"
+    )
 
     variants_to_run = ["random", "planned"] if only_variant is None else [only_variant]
 

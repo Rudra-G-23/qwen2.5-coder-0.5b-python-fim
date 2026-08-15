@@ -62,4 +62,6 @@ checkpoint:
   checkpoint_filename_template: "checkpoint_{chunk_id}.json"
 
 wandb:
-  project: "qwen-coder-python-fim"
+  # Separate from training's qwen-coder-python-fim project — all data
+  # curation + FIM-generation monitoring lands here.
+  project: "521er1007-national-institute-of-technology-rourkela/stack-v3-python-fim-data"
