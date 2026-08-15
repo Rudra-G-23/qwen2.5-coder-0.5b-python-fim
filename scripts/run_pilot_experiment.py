@@ -79,6 +79,7 @@ def load_config(config_path: str) -> dict:
 
 def materialize_variant_jsonl(
     dataset_hf_repo: str,
+    dataset_folder: str,
     dataset_config: str,
     token: str | None,
     cache_dir: str = "data/pilot",
@@ -91,7 +92,7 @@ def materialize_variant_jsonl(
     """
     local_parquet = hf_hub_download(
         repo_id=dataset_hf_repo,
-        filename=f"{dataset_config}/fim_{dataset_config}.parquet",
+        filename=f"{dataset_folder}/data/fim_{dataset_config}.parquet",
         repo_type="dataset",
         token=token,
     )
@@ -151,7 +152,7 @@ def run(
     for variant_name, variant in variants.items():
         if variant_name not in variant_jsonl_cache:
             variant_jsonl_cache[variant_name] = materialize_variant_jsonl(
-                variant["dataset_hf_repo"], variant["dataset_config"], token
+                variant["dataset_hf_repo"], variant["dataset_folder"], variant["dataset_config"], token
             )
         data_path = variant_jsonl_cache[variant_name]
 

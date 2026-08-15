@@ -24,11 +24,13 @@ output_hf_repo: "Rudra-G-23/qwen2.5-coder-0.5b-python-fim"
 
 variants:
   random:
-    dataset_hf_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+    dataset_hf_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
+    dataset_folder: "experiment/random_data"
     dataset_config: "random"
     output_subfolder: "experiment/random_model"
   planned:
-    dataset_hf_repo: "Rudra-G-23/qwen-coder-python-fim-data"
+    dataset_hf_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
+    dataset_folder: "experiment/distributed_data"
     dataset_config: "planned"
     output_subfolder: "experiment/distributed_model"
 
