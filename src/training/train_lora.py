@@ -31,9 +31,10 @@ from typing import Any
 import torch
 import yaml
 from datasets import Dataset
+from huggingface_hub import HfApi, snapshot_download
 from peft import LoraConfig, TaskType, get_peft_model
+from transformers import TrainerCallback
 from trl import SFTConfig
-
 
 # ── Config loader ─────────────────────────────────────────────────────────────
 
@@ -146,7 +147,7 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
 
     try:
         import wandb
-        import weave  # noqa: F401  (imported for side-effect: patch tracing)
+        import weave
     except ImportError as exc:
         print(f"⚠  W&B / Weave not installed ({exc}) — skipping tracking.")
         return None
@@ -314,6 +315,157 @@ def _load_with_peft(cfg: dict):
     return model, tokenizer
 
 
+# ── Mid-training HF checkpoint mirror (resume across a lost session) ──────────
+#
+# Kaggle sessions can drop (12h cap, disconnect, OOM) mid-training, and
+# /kaggle/working does not survive past that session. Without this, a lost
+# session meant re-training the whole run from the base model (see
+# scripts/run_pilot_experiment.py's former "known limitation" note — the
+# unit of resume was a whole (variant, seed) run, not a training step).
+# HFCheckpointCallback mirrors each local Trainer checkpoint to
+# `checkpoints/{run_id}/checkpoint-{step}` in the same HF model repo the
+# final adapter is pushed to, and find_resume_checkpoint/
+# download_resume_checkpoint let a fresh session pick up from the latest one.
+# All HF Hub calls go through the module-level HfApi/snapshot_download
+# references above so tests can monkeypatch them without network access.
+
+def _checkpoint_prefix(run_id: str) -> str:
+    return f"checkpoints/{run_id}"
+
+
+def _latest_pointer_path(run_id: str) -> str:
+    return f"{_checkpoint_prefix(run_id)}/latest_checkpoint.json"
+
+
+class HFCheckpointCallback(TrainerCallback):
+    """Mirrors each local Trainer checkpoint to HF as it's saved, so a new
+    session can resume from the latest step instead of the base model.
+    Keeps only the `keep_last` most recent checkpoints on HF (mirroring
+    Trainer's own `save_total_limit` for local disk) to bound storage."""
+
+    def __init__(self, hf_repo: str, run_id: str, hf_token: str, keep_last: int = 2):
+        self.hf_repo = hf_repo
+        self.run_id = run_id
+        self.hf_token = hf_token
+        self.keep_last = keep_last
+
+    def on_save(self, args, state, control, **kwargs):
+        step = state.global_step
+        local_ckpt = Path(args.output_dir) / f"checkpoint-{step}"
+        if not local_ckpt.exists():
+            return control
+
+        api = HfApi(token=self.hf_token)
+        repo_ckpt_path = f"{_checkpoint_prefix(self.run_id)}/checkpoint-{step}"
+        print(f"\n▶  Mirroring checkpoint-{step} to HF: {self.hf_repo}/{repo_ckpt_path}")
+        api.create_repo(self.hf_repo, repo_type="model", exist_ok=True)
+        api.upload_folder(
+            folder_path=str(local_ckpt),
+            repo_id=self.hf_repo,
+            path_in_repo=repo_ckpt_path,
+            repo_type="model",
+            commit_message=f"{self.run_id}: checkpoint at step {step}",
+        )
+        pointer = {
+            "run_id": self.run_id,
+            "latest_step": step,
+            "path": repo_ckpt_path,
+            "updated_at_utc": datetime.utcnow().isoformat() + "Z",
+        }
+        api.upload_file(
+            path_or_fileobj=json.dumps(pointer, indent=2).encode("utf-8"),
+            path_in_repo=_latest_pointer_path(self.run_id),
+            repo_id=self.hf_repo,
+            repo_type="model",
+            commit_message=f"{self.run_id}: latest checkpoint -> step {step}",
+        )
+        self._prune_old(api, current_step=step)
+        return control
+
+    def _prune_old(self, api: HfApi, current_step: int) -> None:
+        try:
+            files = api.list_repo_files(self.hf_repo, repo_type="model")
+        except Exception as exc:
+            print(f"⚠  Could not list HF repo files to prune old checkpoints: {exc}")
+            return
+
+        prefix = f"{_checkpoint_prefix(self.run_id)}/checkpoint-"
+        steps: set[int] = set()
+        for f in files:
+            if f.startswith(prefix):
+                step_str = f[len(prefix):].split("/")[0]
+                if step_str.isdigit():
+                    steps.add(int(step_str))
+
+        old_steps = sorted(s for s in steps if s != current_step)
+        excess = len(old_steps) + 1 - self.keep_last
+        for s in old_steps[:max(0, excess)]:
+            try:
+                api.delete_folder(
+                    path_in_repo=f"{_checkpoint_prefix(self.run_id)}/checkpoint-{s}",
+                    repo_id=self.hf_repo,
+                    repo_type="model",
+                    commit_message=f"{self.run_id}: prune checkpoint step {s}",
+                )
+            except Exception as exc:
+                print(f"⚠  Could not prune old checkpoint step {s}: {exc}")
+
+
+def find_resume_checkpoint(hf_repo: str, run_id: str, hf_token: str) -> dict[str, Any] | None:
+    """Look up the latest mid-training checkpoint pushed for this exact
+    run_id. Returns the pointer dict (see HFCheckpointCallback.on_save) or
+    None if this run has never checkpointed to HF (fresh run, or a repo/HF
+    hiccup — either way, falling through to training from scratch is the
+    safe default)."""
+    api = HfApi(token=hf_token)
+    try:
+        files = api.list_repo_files(hf_repo, repo_type="model")
+    except Exception:
+        return None
+    if _latest_pointer_path(run_id) not in files:
+        return None
+
+    from huggingface_hub import hf_hub_download
+
+    local_pointer = hf_hub_download(
+        repo_id=hf_repo, filename=_latest_pointer_path(run_id), repo_type="model", token=hf_token,
+    )
+    with open(local_pointer, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def download_resume_checkpoint(
+    hf_repo: str, pointer: dict[str, Any], hf_token: str, local_dir: str,
+) -> str:
+    """Download the checkpoint folder `pointer` points at and return its
+    local path, suitable for Trainer.train(resume_from_checkpoint=...)."""
+    repo_ckpt_path = pointer["path"]
+    snapshot_dir = snapshot_download(
+        repo_id=hf_repo,
+        repo_type="model",
+        allow_patterns=f"{repo_ckpt_path}/*",
+        token=hf_token,
+        local_dir=local_dir,
+    )
+    return str(Path(snapshot_dir) / repo_ckpt_path)
+
+
+def _cleanup_hf_checkpoints(hf_repo: str, run_id: str, hf_token: str) -> None:
+    """Delete this run's mid-training checkpoints from HF once the run has
+    finished and its final adapter is pushed — they've served their purpose
+    (resuming an interrupted session) and just cost storage after that."""
+    api = HfApi(token=hf_token)
+    try:
+        api.delete_folder(
+            path_in_repo=_checkpoint_prefix(run_id),
+            repo_id=hf_repo,
+            repo_type="model",
+            commit_message=f"{run_id}: training complete — drop mid-training checkpoints",
+        )
+    except Exception as exc:
+        print(f"⚠  Could not clean up HF mid-training checkpoints: {exc}")
+
+
 # ── Main training function ────────────────────────────────────────────────────
 
 def train(
@@ -372,6 +524,28 @@ def train(
     wandb_run = init_wandb(cfg, run_id)
     report_to = "wandb" if wandb_run is not None else "none"
 
+    # ── 1b. Resolve HF push destination + look for a mid-training checkpoint
+    # to resume from (survives a lost Kaggle session — see
+    # HFCheckpointCallback above). Computed up front since both the resume
+    # lookup and the final adapter push need it.
+    output_dir = cfg["output"]["dir"]
+    hf_repo = cfg["output"]["hf_repo"]
+    hf_token = os.environ.get("HF_TOKEN")
+
+    resume_from_checkpoint: str | None = None
+    if hf_token and cfg["training"].get("resume_from_hf", True):
+        pointer = find_resume_checkpoint(hf_repo, run_id, hf_token)
+        if pointer is not None:
+            resume_from_checkpoint = download_resume_checkpoint(
+                hf_repo, pointer, hf_token, output_dir
+            )
+            print(
+                f"↻ Resuming {run_id} from HF checkpoint step {pointer['latest_step']}"
+                f" → {resume_from_checkpoint}"
+            )
+        else:
+            print(f"  No prior HF checkpoint for {run_id} — starting fresh.")
+
     # ── 2. Load model ─────────────────────────────────────────────────────────
     try:
         model, tokenizer = _load_with_unsloth(cfg)
@@ -391,7 +565,6 @@ def train(
     )
 
     # ── 4. TrainingArguments ──────────────────────────────────────────────────
-    output_dir = cfg["output"]["dir"]
     t = cfg["training"]
 
     training_args = SFTConfig(
@@ -432,6 +605,9 @@ def train(
         args=training_args,
     )
 
+    if hf_token:
+        trainer.add_callback(HFCheckpointCallback(hf_repo=hf_repo, run_id=run_id, hf_token=hf_token))
+
     # WORKAROUND: Prevent PicklingError for SFTConfig when saving checkpoints
     _orig_torch_save = torch.save
     def _patched_torch_save(obj, f, *args, **kwargs):
@@ -445,8 +621,8 @@ def train(
         torch.cuda.reset_peak_memory_stats()
 
     print("\n▶  Starting training…")
-    result = trainer.train()
-    print(f"\n✓ Training complete")
+    result = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
+    print("\n✓ Training complete")
     print(f"  Training loss : {result.training_loss:.4f}")
     print(f"  Runtime       : {result.metrics.get('train_runtime', 0):.0f}s")
     print(f"  Samples/sec   : {result.metrics.get('train_samples_per_second', 0):.1f}")
@@ -482,12 +658,10 @@ def train(
         })
 
     # ── 9. Push adapter to Hugging Face ───────────────────────────────────────
-    hf_repo = cfg["output"]["hf_repo"]
     # subfolder places this run inside a single shared repo (e.g.
     # "experiment/random_model") instead of giving every variant/approach
     # its own repo — see data-stage-1.md §7. "" pushes to the repo root.
     subfolder = cfg["output"].get("subfolder", "")
-    hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
         print("\n⚠  HF_TOKEN not set — skipping Hugging Face push.")
         print("   Set os.environ['HF_TOKEN'] before calling train() to enable push.")
@@ -531,8 +705,6 @@ def train(
             ],
         )})
 
-    from huggingface_hub import HfApi
-
     dest = f"{hf_repo}/{subfolder}" if subfolder else hf_repo
     print(f"\n▶  Pushing adapter to HF: {dest}")
     api = HfApi(token=hf_token)
@@ -546,6 +718,11 @@ def train(
     )
     hf_url = f"https://huggingface.co/{hf_repo}" + (f"/tree/main/{subfolder}" if subfolder else "")
     print(f"✓ Adapter pushed → {hf_url}")
+
+    # Run finished and the final adapter is safely on HF — the mid-training
+    # checkpoints that existed only to survive a lost session are no longer
+    # needed. Best-effort: a failure here doesn't affect the run's success.
+    _cleanup_hf_checkpoints(hf_repo, run_id, hf_token)
 
     # Log HF URL + a lightweight model artifact to W&B.
     # The adapter weights themselves live on HF (see hf_repo above) — the W&B

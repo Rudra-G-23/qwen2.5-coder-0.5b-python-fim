@@ -32,6 +32,12 @@ training:
   seed: 42
   fp16: true                         # T4/P100 support fp16 natively
   optim: "adamw_torch"               # optimizer name — logged to W&B config
+  # If true (default) and HF_TOKEN is set, train() looks for a mid-training
+  # checkpoint already pushed to output.hf_repo under
+  # checkpoints/{run_id}/ (see src/training/train_lora.py's
+  # HFCheckpointCallback) and resumes from it instead of starting over —
+  # survives a lost Kaggle session without re-training from the base model.
+  resume_from_hf: true
 
 data:
   path: "data/fim_dataset.jsonl"

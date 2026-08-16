@@ -30,18 +30,30 @@ path actually get used, instead of being purely manual.
 
 Resume across a Kaggle-session interruption (net drop, compute cutoff): a
 Kaggle session's local disk (/kaggle/working, including
-base_cfg['output']['dir']) does not survive past that session, and
-train_lora.train() always starts a fresh model from the base — there is no
-mid-epoch checkpoint resume. So the unit of resume here is a whole
-(variant, seed) run, not a training step. Before training each (variant,
-seed), `run()` checks HF commit history for a prior successful push whose
-commit message starts with that run's deterministic run_id (train_lora's
-commit_message=f"{run_id}: push adapter..."). If found, training is skipped
-entirely and the adapter is re-downloaded from that exact commit SHA so
-SAFIM eval (whose local results/pilot/... output does NOT survive a session
-restart either) still runs this session — re-running the notebook after an
-interruption costs one HF metadata lookup + adapter download per
-already-done seed, not a GPU re-train.
+base_cfg['output']['dir']) does not survive past that session. Two layers
+of resume cover this:
+
+  - Mid-training (within a still-unfinished (variant, seed) run):
+    train_lora.train() itself mirrors each Trainer checkpoint to
+    `checkpoints/{run_id}/` in output_hf_repo (HFCheckpointCallback) and, on
+    the next call with the same run_id (deterministic via the attempt=seed /
+    dataset_version=variant overrides below), resumes training from the
+    latest one instead of the base model — see
+    src/training/train_lora.py's "Mid-training HF checkpoint mirror"
+    section. This happens transparently inside train(); `run()` below
+    doesn't need to do anything extra for it.
+  - Whole-run (a (variant, seed) run that already finished and pushed before
+    the interruption): before training each (variant, seed), `run()` checks
+    HF commit history for a prior successful push whose commit message
+    starts with that run's run_id (train_lora's
+    commit_message=f"{run_id}: push adapter..."). If found, training is
+    skipped entirely and the adapter is re-downloaded from that exact commit
+    SHA so SAFIM eval (whose local results/pilot/... output does NOT survive
+    a session restart either) still runs this session.
+
+Either way, re-running the notebook after an interruption costs at most a
+partial re-train of the (variant, seed) that was in flight, not a full GPU
+re-train of every already-done seed.
 
 Run on Kaggle (GPU required) — see notebooks/kaggle_wandb.ipynb for the
 pattern this reuses; running locally without a GPU will only get as far as
