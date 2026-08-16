@@ -48,6 +48,7 @@ def _print_report(report_path: Path) -> None:
 
     print(f"Verdict: {report['verdict']}")
     print(f"\n→ full report written to {report_path}")
+    print(f"→ bar chart written to {report_path.with_suffix('.png')}")
 
 
 def _parse_args() -> argparse.Namespace:

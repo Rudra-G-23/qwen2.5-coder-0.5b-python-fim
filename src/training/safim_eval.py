@@ -350,7 +350,55 @@ def write_pilot_comparison_report(
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    plot_pilot_comparison(report, out_path=str(path.with_suffix(".png")))
     return path
+
+
+def plot_pilot_comparison(
+    report: dict[str, Any], out_path: str = "reports/pilot_comparison.png"
+) -> str | None:
+    """
+    Bar chart of mean LoRA-FT pass@1 per variant (random vs. planned), with
+    error bars spanning each variant's min/max across seeds — makes the
+    range-overlap verdict from aggregate_pilot_results() visible at a glance.
+    Variants with no completed seeds yet are skipped, not plotted as zero.
+    """
+    import matplotlib.pyplot as plt
+
+    per_variant = report["per_variant"]
+    names = [n for n, stats in per_variant.items() if stats["mean"] is not None]
+    if not names:
+        print("⚠  No completed seeds yet — skipping pilot comparison plot.")
+        return None
+
+    means = [per_variant[n]["mean"] for n in names]
+    lower = [per_variant[n]["mean"] - per_variant[n]["min"] for n in names]
+    upper = [per_variant[n]["max"] - per_variant[n]["mean"] for n in names]
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    bars = ax.bar(names, means, yerr=[lower, upper], capsize=8, color="#4C72B0", width=0.5)
+    ax.set_title("Pilot: random vs. planned FIM — SAFIM pass@1 (LoRA-FT)", fontsize=12)
+    ax.set_ylabel("pass@1")
+    ax.set_ylim(0, 1)
+
+    for bar, mean, top in zip(bars, means, upper):
+        ax.annotate(
+            f"{mean:.3f}",
+            (bar.get_x() + bar.get_width() / 2.0, mean + top),
+            xytext=(0, 6),
+            textcoords="offset points",
+            ha="center",
+            fontsize=10,
+            fontweight="bold",
+        )
+
+    plt.tight_layout()
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"✓ Pilot comparison plot → {path}")
+    return str(path)
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
