@@ -516,6 +516,21 @@ def train(
     with open(adapter_path / "metadata.json", "w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
 
+    from src.training.report_tables import render_hyperparameter_table
+
+    hyperparameter_table_path = adapter_path / "hyperparameter_table.md"
+    hyperparameter_table_path.write_text(render_hyperparameter_table(cfg), encoding="utf-8")
+    if wandb_run is not None:
+        import wandb
+
+        wandb_run.log({"experiment_setup/hyperparameter_table": wandb.Table(
+            columns=["Hyperparameter", "Value"],
+            data=[
+                [cell.strip() for cell in line.split("|")[1:3]]
+                for line in render_hyperparameter_table(cfg).splitlines()[2:]
+            ],
+        )})
+
     from huggingface_hub import HfApi
 
     dest = f"{hf_repo}/{subfolder}" if subfolder else hf_repo
@@ -558,6 +573,7 @@ def train(
             },
         )
         artifact.add_reference(f"https://huggingface.co/{hf_repo}", name="hf_repo")
+        artifact.add_file(str(hyperparameter_table_path))
         wandb_run.log_artifact(artifact)
 
         if finish_wandb:

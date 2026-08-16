@@ -39,6 +39,7 @@ import pandas as pd
 import torch
 
 from src.training.evaluate import generate_completion, load_model
+from src.training.report_tables import log_plots_artifact
 
 MASK_TOKEN = "{{completion}}"
 
@@ -255,7 +256,8 @@ def run_safim_evaluation(
         except Exception as exc:
             print(f"⚠  W&B SAFIM metrics log failed: {exc}")
 
-    plot_safim_comparison(summary, output_dir=f"{output_dir}/plots", wandb_run=wandb_run)
+    plot_path = plot_safim_comparison(summary, output_dir=f"{output_dir}/plots", wandb_run=wandb_run)
+    log_plots_artifact(wandb_run, [plot_path], csv_path, name="safim-plots")
 
     return summary
 
@@ -372,7 +374,8 @@ def run_safim_evaluation_by_type(
         except Exception as exc:
             print(f"⚠  W&B SAFIM by-type metrics log failed: {exc}")
 
-    plot_safim_by_type(summary, output_dir=f"{output_dir}/plots", wandb_run=wandb_run)
+    plot_path = plot_safim_by_type(summary, output_dir=f"{output_dir}/plots", wandb_run=wandb_run)
+    log_plots_artifact(wandb_run, [plot_path], csv_path, name="safim-by-type-plots")
 
     return summary
 
