@@ -4,9 +4,11 @@ Compare the base Qwen2.5-Coder-0.5B against the LoRA fine-tuned adapter
 on a held-out FIM dataset.
 
 Outputs:
-    results/metrics.csv           — per-model aggregated scores
-    results/plots/loss_curve.png  — training loss curve (reads trainer log)
-    results/plots/comparison.png  — grouped bar chart: Base vs LoRA-FT
+    results/metrics.csv                 — per-model aggregated scores
+    results/plots/loss_curve.png        — training loss curve (reads trainer log)
+    results/plots/lr_curve.png          — learning-rate schedule (reads trainer log)
+    results/plots/perplexity_curve.png  — exp(loss) curve (reads trainer log)
+    results/plots/comparison.png        — grouped bar chart: Base vs LoRA-FT
 
 Metrics used:
     exact_match     — strict character equality after stripping whitespace
@@ -34,6 +36,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
 import torch
+
+from src.training.report_tables import log_plots_artifact
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -320,6 +324,121 @@ def plot_loss_curve(
     return out_path
 
 
+def plot_lr_curve(
+    trainer_log_path: str,
+    output_dir: str = "results/plots",
+    wandb_run: Any | None = None,
+) -> str | None:
+    """
+    Read the trainer_state.json log written by HuggingFace Trainer and plot
+    the learning-rate schedule actually used during training. HF's own
+    Trainer logs this to W&B automatically when report_to="wandb", but it
+    was never saved as a repo artifact / paper-ready figure — this makes it
+    one, mirroring plot_loss_curve's shape.
+    """
+    log_path = Path(trainer_log_path)
+    if not log_path.exists():
+        print(f"⚠  Trainer log not found at {trainer_log_path} — skipping LR curve.")
+        return None
+
+    with open(log_path) as f:
+        state = json.load(f)
+
+    steps, lrs = [], []
+    for entry in state.get("log_history", []):
+        if "learning_rate" in entry:
+            steps.append(entry["step"])
+            lrs.append(entry["learning_rate"])
+
+    if not lrs:
+        print("⚠  No learning_rate data in trainer log — skipping LR curve.")
+        return None
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(9, 5))
+    plt.plot(steps, lrs, linewidth=2, color="#C44E52")
+    plt.xlabel("Step")
+    plt.ylabel("Learning rate")
+    plt.title("LoRA Training — Learning-Rate Schedule")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    out_path = f"{output_dir}/lr_curve.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"✓ LR curve → {out_path}")
+
+    if wandb_run is not None:
+        try:
+            import wandb
+
+            wandb_run.log({"train/lr_curve": wandb.Image(out_path)})
+        except Exception as exc:
+            print(f"⚠  W&B image log failed: {exc}")
+
+    return out_path
+
+
+def plot_perplexity_curve(
+    trainer_log_path: str,
+    output_dir: str = "results/plots",
+    wandb_run: Any | None = None,
+) -> str | None:
+    """
+    Perplexity = exp(loss), derived from the same trainer_state.json log
+    plot_loss_curve reads. Conventional to report alongside loss for LM
+    fine-tuning papers even though it carries no information loss doesn't.
+    """
+    import math
+
+    log_path = Path(trainer_log_path)
+    if not log_path.exists():
+        print(f"⚠  Trainer log not found at {trainer_log_path} — skipping perplexity curve.")
+        return None
+
+    with open(log_path) as f:
+        state = json.load(f)
+
+    train_steps, train_ppl = [], []
+    eval_steps, eval_ppl = [], []
+    for entry in state.get("log_history", []):
+        if "loss" in entry:
+            train_steps.append(entry["step"])
+            train_ppl.append(math.exp(entry["loss"]))
+        if "eval_loss" in entry:
+            eval_steps.append(entry["step"])
+            eval_ppl.append(math.exp(entry["eval_loss"]))
+
+    if not train_ppl:
+        print("⚠  No loss data in trainer log — skipping perplexity curve.")
+        return None
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(9, 5))
+    plt.plot(train_steps, train_ppl, label="Train perplexity", linewidth=2)
+    if eval_ppl:
+        plt.plot(eval_steps, eval_ppl, label="Val perplexity", linewidth=2, linestyle="--")
+    plt.xlabel("Step")
+    plt.ylabel("Perplexity")
+    plt.title("LoRA Training — Perplexity Curve")
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    out_path = f"{output_dir}/perplexity_curve.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"✓ Perplexity curve → {out_path}")
+
+    if wandb_run is not None:
+        try:
+            import wandb
+
+            wandb_run.log({"train/perplexity_curve": wandb.Image(out_path)})
+        except Exception as exc:
+            print(f"⚠  W&B image log failed: {exc}")
+
+    return out_path
+
+
 # ── Top-level orchestrator ────────────────────────────────────────────────────
 
 
@@ -426,9 +545,15 @@ def run_evaluation(
 
     # ── Plots ─────────────────────────────────────────────────────────────────
     plots_dir = f"{output_dir}/plots"
-    plot_comparison(df, output_dir=plots_dir, wandb_run=wandb_run)
+    plot_paths = [plot_comparison(df, output_dir=plots_dir, wandb_run=wandb_run)]
     if trainer_log_path:
-        plot_loss_curve(trainer_log_path, output_dir=plots_dir, wandb_run=wandb_run)
+        plot_paths.append(plot_loss_curve(trainer_log_path, output_dir=plots_dir, wandb_run=wandb_run))
+        plot_paths.append(plot_lr_curve(trainer_log_path, output_dir=plots_dir, wandb_run=wandb_run))
+        plot_paths.append(
+            plot_perplexity_curve(trainer_log_path, output_dir=plots_dir, wandb_run=wandb_run)
+        )
+
+    log_plots_artifact(wandb_run, [p for p in plot_paths if p], csv_path, name="eval-plots")
 
     return summary
 

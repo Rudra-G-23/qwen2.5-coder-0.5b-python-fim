@@ -255,7 +255,177 @@ def run_safim_evaluation(
         except Exception as exc:
             print(f"⚠  W&B SAFIM metrics log failed: {exc}")
 
+    plot_safim_comparison(summary, output_dir=f"{output_dir}/plots", wandb_run=wandb_run)
+
     return summary
+
+
+def plot_safim_comparison(
+    summary: pd.DataFrame,
+    output_dir: str = "results/plots",
+    wandb_run: Any | None = None,
+) -> str:
+    """
+    Bar chart: SAFIM pass@1, Base vs LoRA-FT — the figure run_safim_evaluation
+    previously only wrote as a CSV. Mirrors plot_pilot_comparison's style but
+    for a single (base, adapter) pair rather than a variant sweep, so no
+    error bars (one score per model, not per-seed range).
+    """
+    import matplotlib.pyplot as plt
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    _fig, ax = plt.subplots(figsize=(5, 5))
+    bars = ax.bar(summary.index, summary["pass@1"], color="#55A868", width=0.5)
+    ax.set_title("SAFIM pass@1 — Base vs LoRA-FT", fontsize=12)
+    ax.set_ylabel("pass@1")
+    ax.set_ylim(0, 1)
+    for bar in bars:
+        ax.annotate(
+            f"{bar.get_height():.3f}",
+            (bar.get_x() + bar.get_width() / 2.0, bar.get_height() + 0.01),
+            ha="center",
+            fontsize=10,
+            fontweight="bold",
+        )
+    plt.tight_layout()
+    out_path = f"{output_dir}/safim_comparison.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"✓ SAFIM comparison plot → {out_path}")
+
+    if wandb_run is not None:
+        try:
+            import wandb
+
+            wandb_run.log({"eval/safim/comparison_chart": wandb.Image(out_path)})
+        except Exception as exc:
+            print(f"⚠  W&B image log failed: {exc}")
+
+    return out_path
+
+
+# ── Pass@1 by SAFIM task type ───────────────────────────────────────────────
+# SAFIM's Python subset ships three configs — "control" (control-flow),
+# "block", "api" (API-call) completion — each exercising a different span
+# shape. Running all three and breaking pass@1 down by config is the figure
+# that actually speaks to this project's random-vs-planned FIM-span-type
+# hypothesis (src/fim/ast_bucketer.py's span_type buckets feed the training
+# data; SAFIM's configs are the closest execution-based proxy for "did span
+# type affect completion quality" at eval time).
+
+
+def run_safim_evaluation_by_type(
+    base_model_name: str,
+    adapter_path: str,
+    output_dir: str = "results",
+    configs: tuple[str, ...] = ("control", "api", "block"),
+    max_samples: int = 100,
+    seed: int = 42,
+    wandb_run: Any | None = None,
+) -> pd.DataFrame:
+    """
+    Execution-based pass@1, Base vs LoRA-FT, broken down by SAFIM task type.
+    Loads each model once (not once per config) and loops configs against it,
+    since model loading dominates wall-clock time relative to a 100-sample
+    eval pass.
+    """
+    all_results: list[dict] = []
+
+    for model_label, adapter in (("Base", None), ("LoRA-FT", adapter_path)):
+        print(f"▶  {model_label} model")
+        model, tokenizer = load_model(base_model_name, adapter)
+        for config in configs:
+            records = load_safim_python(config=config, max_samples=max_samples, seed=seed)
+            print(f"  config={config}: {len(records)} tasks")
+            results = evaluate_pass_at_1(model, tokenizer, records, model_label, wandb_run=wandb_run)
+            for r in results:
+                r["config"] = config
+            all_results += results
+        del model
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print()
+
+    df = pd.DataFrame(all_results)
+    summary = df.groupby(["config", "model"])[["pass@1"]].mean().reset_index()
+
+    print("\n" + "=" * 50)
+    print("📊  SAFIM pass@1 by task type")
+    print("=" * 50)
+    print(summary.to_string(index=False))
+    print("=" * 50)
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    csv_path = f"{output_dir}/safim_metrics_by_type.csv"
+    summary.to_csv(csv_path, index=False)
+    print(f"\n✓ SAFIM by-type metrics CSV → {csv_path}")
+
+    if wandb_run is not None:
+        try:
+            import wandb
+
+            for _, row in summary.iterrows():
+                prefix = "eval/safim/base" if row["model"] == "Base" else "eval/safim/lora_ft"
+                wandb_run.log({f"{prefix}/pass_at_1_{row['config']}": row["pass@1"]})
+            wandb_run.log({"eval/safim/by_type_table": wandb.Table(dataframe=summary)})
+        except Exception as exc:
+            print(f"⚠  W&B SAFIM by-type metrics log failed: {exc}")
+
+    plot_safim_by_type(summary, output_dir=f"{output_dir}/plots", wandb_run=wandb_run)
+
+    return summary
+
+
+def plot_safim_by_type(
+    summary: pd.DataFrame,
+    output_dir: str = "results/plots",
+    wandb_run: Any | None = None,
+) -> str:
+    """
+    Grouped bar chart: pass@1 per SAFIM task type (control/api/block), Base
+    vs LoRA-FT side by side — the figure that shows whether the fine-tune's
+    gain is uniform across span shapes or concentrated in specific ones.
+    """
+    import matplotlib.pyplot as plt
+
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    config_types = sorted(summary["config"].unique())
+    models = sorted(summary["model"].unique())
+    x = range(len(config_types))
+    width = 0.8 / max(len(models), 1)
+
+    _fig, ax = plt.subplots(figsize=(8, 5))
+    for i, model_label in enumerate(models):
+        vals = [
+            summary[(summary["config"] == c) & (summary["model"] == model_label)]["pass@1"].sum()
+            for c in config_types
+        ]
+        offset = (i - (len(models) - 1) / 2) * width
+        ax.bar([xi + offset for xi in x], vals, width, label=model_label)
+
+    ax.set_xticks(list(x))
+    ax.set_xticklabels(config_types)
+    ax.set_ylabel("pass@1")
+    ax.set_ylim(0, 1)
+    ax.set_title("SAFIM pass@1 by task type — Base vs LoRA-FT", fontsize=12)
+    ax.legend()
+    plt.tight_layout()
+    out_path = f"{output_dir}/safim_by_type.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"✓ SAFIM by-type plot → {out_path}")
+
+    if wandb_run is not None:
+        try:
+            import wandb
+
+            wandb_run.log({"eval/safim/by_type_chart": wandb.Image(out_path)})
+        except Exception as exc:
+            print(f"⚠  W&B image log failed: {exc}")
+
+    return out_path
 
 
 # ── Pilot comparison aggregation ────────────────────────────────────────────
@@ -308,6 +478,10 @@ def aggregate_pilot_results(
             "scores_by_seed": scores,
             "missing_seeds": missing,
             "mean": statistics.mean(found) if found else None,
+            # Sample stdev needs 2+ points; a single-seed result reports std
+            # as None rather than 0.0, since 0.0 would misleadingly imply
+            # zero seed-to-seed variance was actually observed.
+            "std": statistics.stdev(found) if len(found) >= 2 else None,
             "min": min(found) if found else None,
             "max": max(found) if found else None,
         }
@@ -351,6 +525,43 @@ def write_pilot_comparison_report(
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     plot_pilot_comparison(report, out_path=str(path.with_suffix(".png")))
+    write_seed_variance_table(report, out_path=str(path.parent / f"{path.stem}_variance.md"))
+    return path
+
+
+def render_seed_variance_table(report: dict[str, Any]) -> str:
+    """
+    Markdown seed-variance table: mean ± std, min/max, and per-seed scores
+    for each variant — the paper-ready form of aggregate_pilot_results'
+    plain-language overlap verdict. n=2-3 seeds is too few for a formal
+    significance test (data-stage-1.md §8), so this reports spread, not a
+    p-value — the verdict string stays the source of truth for "which
+    variant wins," this table is the evidence a reviewer would ask to see.
+    """
+    lines = [
+        "| Variant | Seeds (n) | Mean pass@1 | Std | Min | Max | Missing seeds |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for variant_name, stats in report["per_variant"].items():
+        n = sum(1 for v in stats["scores_by_seed"].values() if v is not None)
+        mean = f"{stats['mean']:.4f}" if stats["mean"] is not None else "—"
+        std = f"{stats['std']:.4f}" if stats["std"] is not None else "—"
+        lo = f"{stats['min']:.4f}" if stats["min"] is not None else "—"
+        hi = f"{stats['max']:.4f}" if stats["max"] is not None else "—"
+        missing = ", ".join(str(s) for s in stats["missing_seeds"]) or "none"
+        lines.append(f"| {variant_name} | {n} | {mean} | {std} | {lo} | {hi} | {missing} |")
+    lines.append("")
+    lines.append(f"**Verdict:** {report['verdict']}")
+    return "\n".join(lines) + "\n"
+
+
+def write_seed_variance_table(
+    report: dict[str, Any], out_path: str = "reports/pilot_comparison_variance.md"
+) -> Path:
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_seed_variance_table(report), encoding="utf-8")
+    print(f"✓ Seed-variance table → {path}")
     return path
 
 

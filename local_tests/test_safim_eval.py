@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.training.safim_eval import (
     aggregate_pilot_results,
     load_seed_pass_at_1,
+    render_seed_variance_table,
     write_pilot_comparison_report,
 )
 
@@ -82,6 +83,39 @@ class TestAggregatePilotResults:
         report = aggregate_pilot_results(self.PILOT_CFG, results_dir=str(tmp_path))
         assert "overlap" in report["verdict"]
         assert "inconclusive" in report["verdict"]
+
+    def test_std_is_none_for_single_seed(self, tmp_path):
+        pilot_cfg = {"seeds": [1], "variants": {"random": {}}}
+        _write_metrics_csv(tmp_path / "random_seed1", 0.1, 0.2)
+        report = aggregate_pilot_results(pilot_cfg, results_dir=str(tmp_path))
+        assert report["per_variant"]["random"]["std"] is None
+
+    def test_std_computed_across_seeds(self, tmp_path):
+        for seed, score in zip(self.PILOT_CFG["seeds"], [0.10, 0.20, 0.30]):
+            _write_metrics_csv(tmp_path / f"random_seed{seed}", 0.05, score)
+        report = aggregate_pilot_results(
+            {"seeds": self.PILOT_CFG["seeds"], "variants": {"random": {}}},
+            results_dir=str(tmp_path),
+        )
+        import statistics
+
+        assert report["per_variant"]["random"]["std"] == statistics.stdev([0.10, 0.20, 0.30])
+
+
+class TestRenderSeedVarianceTable:
+    def test_includes_mean_std_and_verdict(self, tmp_path):
+        pilot_cfg = {"seeds": [42, 123], "variants": {"random": {}, "planned": {}}}
+        for seed, score in zip(pilot_cfg["seeds"], [0.10, 0.20]):
+            _write_metrics_csv(tmp_path / f"random_seed{seed}", 0.05, score)
+        for seed, score in zip(pilot_cfg["seeds"], [0.30, 0.32]):
+            _write_metrics_csv(tmp_path / f"planned_seed{seed}", 0.05, score)
+
+        report = aggregate_pilot_results(pilot_cfg, results_dir=str(tmp_path))
+        table = render_seed_variance_table(report)
+        assert "| random |" in table
+        assert "| planned |" in table
+        assert "**Verdict:**" in table
+        assert report["verdict"] in table
 
 
 class TestWritePilotComparisonReport:
