@@ -31,7 +31,10 @@ variants:
   planned:
     dataset_hf_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
     dataset_folder: "experiment/distributed_data"
-    dataset_config: "planned"
+    # Matches configs/data/fim_distribution.yaml's output.configs.planned
+    # ("distributed") — that's the actual parquet filename generate_fim_variants.py
+    # uploaded (fim_distributed.parquet), not the internal variant name "planned".
+    dataset_config: "distributed"
     output_subfolder: "experiment/distributed_model"
 
 wandb:
