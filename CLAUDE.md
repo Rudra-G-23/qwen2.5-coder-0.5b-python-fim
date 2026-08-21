@@ -87,10 +87,10 @@ zero W&B setup.
 Every experiment variant and every fine-tune approach (LoRA, QLoRA, distilled, ...) pushes adapters
 into **one** HF repo (`Rudra-G-23/qwen2.5-coder-0.5b-python-fim`), separated by `subfolder`
 (e.g. `experiment/random_model`) rather than by separate repos — keeps W&B/eval comparisons and HF
-browsing under one roof. `lora.yaml`'s `output.subfolder` is the default; `pilot.yaml` overrides it
-per (variant, seed). Known limitation (documented in `scripts/run_pilot_experiment.py`): each
-variant's subfolder is shared across all its seeds, so only the last seed's adapter survives on the
-default branch — earlier seeds are only recoverable by HF commit SHA.
+browsing under one roof. `lora.yaml`'s `output.subfolder` is the default; `pilot.yaml`'s
+`run_pilot_experiment.py` composes a per-seed path from it (`{output_subfolder}/seed{seed}`, e.g.
+`experiment/random_model/seed42`), so every seed's adapter lands on its own subfolder in the
+default branch instead of overwriting the variant's shared folder.
 
 ### Data-curation vs. training W&B/Weave tracking are separate projects
 

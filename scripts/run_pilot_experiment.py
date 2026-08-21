@@ -15,18 +15,16 @@ Both variants push into ONE shared HF model repo
 data-stage-1.md §7. Future fine-tune approaches on whichever variant wins
 (LoRA, QLoRA, ...) land in the same repo too, under their own subfolders.
 
-Known limitation: each *variant*'s subfolder is shared across all its seeds
-(not one subfolder per seed) — each seed's push lands as a new commit to
-that subfolder, so only the last seed's adapter is on the default branch;
-earlier seeds are only recoverable by HF commit SHA. This doesn't affect the
-pilot comparison itself (SAFIM eval runs immediately on each seed's local
-adapter, right after that seed's training, before the next seed's push can
-touch it) — it only affects re-fetching a specific past seed's adapter from
-HF later. Fixing it means deciding a new per-seed subfolder naming scheme,
-which is a naming decision for you to make, not something to silently invent
-here (data-stage-2.md §1 reserves naming decisions the same way).
-`_find_existing_run_commit` below is what makes that commit-SHA recovery
-path actually get used, instead of being purely manual.
+Each seed gets its own subfolder, nested under the variant's
+(`{variant['output_subfolder']}/seed{seed}`, e.g. "experiment/random_model/seed42") —
+so every seed's push lands on its own path in the default branch instead of
+overwriting the variant's shared folder. All of a variant's seeds still land
+under one repo prefix for easy browsing, but each is independently
+retrievable without needing to hunt down a specific commit SHA.
+`_find_existing_run_commit` below still does commit-history matching (now
+scoped implicitly via run_id, which already encodes seed) — that's what
+drives the whole-run skip-and-refetch path on resume, not a workaround for
+lost seeds.
 
 Resume across a Kaggle-session interruption (net drop, compute cutoff): a
 Kaggle session's local disk (/kaggle/working, including
@@ -174,7 +172,7 @@ def run(
                 "training": {"seed": seed},
                 "output": {
                     "hf_repo": pilot_cfg["output_hf_repo"],
-                    "subfolder": variant["output_subfolder"],
+                    "subfolder": f"{variant['output_subfolder']}/seed{seed}",
                 },
                 "wandb": {
                     "project": wandb_cfg["project"],
@@ -211,7 +209,7 @@ def run(
                 # even though training doesn't.
                 print(f"✓ Found existing push for run_id={run_id} (commit {resume_commit[:8]}) "
                       f"— skipping training, re-fetching adapter.")
-                subfolder = variant["output_subfolder"]
+                subfolder = f"{variant['output_subfolder']}/seed{seed}"
                 snapshot_dir = snapshot_download(
                     repo_id=output_hf_repo,
                     repo_type="model",
