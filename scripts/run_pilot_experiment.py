@@ -19,12 +19,12 @@ Each seed gets its own subfolder, nested under the variant's
 (`{variant['output_subfolder']}/seed{seed}`, e.g. "experiment/random_model/seed42") —
 so every seed's push lands on its own path in the default branch instead of
 overwriting the variant's shared folder. All of a variant's seeds still land
-under one repo prefix for easy browsing, but each is independently
-retrievable without needing to hunt down a specific commit SHA.
-`_find_existing_run_commit` below still does commit-history matching (now
-scoped implicitly via run_id, which already encodes seed) — that's what
-drives the whole-run skip-and-refetch path on resume, not a workaround for
-lost seeds.
+under one repo prefix for easy browsing, and each is independently
+retrievable — no commit-SHA hunting needed, since a seed's own subfolder is
+never touched by any other run. That also means `_subfolder_already_pushed`
+below can just check whether that path exists on the default branch, instead
+of walking commit history and pinning to a specific historical SHA the way a
+shared-subfolder scheme would have required.
 
 Resume across a Kaggle-session interruption (net drop, compute cutoff): a
 Kaggle session's local disk (/kaggle/working, including
@@ -42,12 +42,11 @@ of resume cover this:
     doesn't need to do anything extra for it.
   - Whole-run (a (variant, seed) run that already finished and pushed before
     the interruption): before training each (variant, seed), `run()` checks
-    HF commit history for a prior successful push whose commit message
-    starts with that run's run_id (train_lora's
-    commit_message=f"{run_id}: push adapter..."). If found, training is
-    skipped entirely and the adapter is re-downloaded from that exact commit
-    SHA so SAFIM eval (whose local results/pilot/... output does NOT survive
-    a session restart either) still runs this session.
+    whether that seed's subfolder already exists on the default branch
+    (`_subfolder_already_pushed`). If found, training is skipped entirely and
+    the adapter is re-downloaded from the current default branch so SAFIM
+    eval (whose local results/pilot/... output does NOT survive a session
+    restart either) still runs this session.
 
 Either way, re-running the notebook after an interruption costs at most a
 partial re-train of the (variant, seed) that was in flight, not a full GPU
@@ -118,25 +117,22 @@ def materialize_variant_jsonl(
     return str(out_path)
 
 
-def _find_existing_run_commit(hf_repo: str, run_id: str, token: str | None) -> str | None:
+def _subfolder_already_pushed(hf_repo: str, subfolder: str, token: str | None) -> bool:
     """Has this exact (variant, seed) run already trained + pushed, in a
-    prior session? train_lora.train()'s commit_message always starts with
-    f"{run_id}: push adapter..." (run_id is deterministic per (variant, seed)
-    via the attempt=seed / dataset_version=variant overrides below), so a
-    matching commit title is proof that seed's GPU work is already done —
-    safe to skip re-training and just fetch that commit's adapter instead.
-    Returns the commit SHA to fetch from, or None if this run hasn't
-    happened yet (fresh pilot, or a repo/HF hiccup — either way, falling
-    through to a normal training run is the safe default)."""
+    prior session? Each seed gets its own never-shared subfolder (see module
+    docstring), so its presence on the default branch is proof by itself —
+    no need to walk commit history or pin to a specific historical SHA the
+    way a shared-subfolder scheme would have required. Returns False on a
+    missing file *or* a repo/HF hiccup (e.g. a brand-new repo on the very
+    first pilot run ever) — either way, falling through to a normal training
+    run is the safe default."""
     api = HfApi(token=token)
     try:
-        commits = api.list_repo_commits(hf_repo, repo_type="model")
+        return api.file_exists(
+            repo_id=hf_repo, filename=f"{subfolder}/adapter_model.safetensors", repo_type="model"
+        )
     except Exception:
-        return None
-    for commit in commits:
-        if commit.title.startswith(f"{run_id}:"):
-            return commit.commit_id
-    return None
+        return False
 
 
 def run(
@@ -197,23 +193,20 @@ def run(
 
             merged_cfg = _deep_merge(base_cfg, overrides)
             run_id = build_run_id(merged_cfg)
-            resume_commit = _find_existing_run_commit(output_hf_repo, run_id, token)
+            subfolder = f"{variant['output_subfolder']}/seed{seed}"
 
-            if resume_commit is not None:
+            if _subfolder_already_pushed(output_hf_repo, subfolder, token):
                 # Already trained + pushed in a prior (interrupted) session —
-                # skip the GPU work and fetch that exact seed's adapter back
-                # by commit SHA (see module docstring's "Resume across a
+                # skip the GPU work and fetch that seed's adapter back from
+                # the default branch (see module docstring's "Resume across a
                 # Kaggle-session interruption" note). SAFIM eval still runs
                 # below: its local results/pilot/... output doesn't survive
                 # a session restart, so this session needs it regenerated
                 # even though training doesn't.
-                print(f"✓ Found existing push for run_id={run_id} (commit {resume_commit[:8]}) "
-                      f"— skipping training, re-fetching adapter.")
-                subfolder = f"{variant['output_subfolder']}/seed{seed}"
+                print(f"✓ Found existing push at {subfolder} — skipping training, re-fetching adapter.")
                 snapshot_dir = snapshot_download(
                     repo_id=output_hf_repo,
                     repo_type="model",
-                    revision=resume_commit,
                     allow_patterns=f"{subfolder}/*",
                     token=token,
                 )
