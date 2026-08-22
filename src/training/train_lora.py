@@ -104,6 +104,23 @@ def build_run_id(cfg: dict) -> str:
     return run_id
 
 
+def _stable_wandb_id(run_id: str) -> str:
+    """`run_id` with its {YYYYMMDD} component (second-to-last, per
+    build_run_id's format) dropped, used as the W&B run id so a session
+    that resumes on a later UTC date reattaches to the SAME W&B run
+    (status flips Crashed -> Running, charts stay one continuous line)
+    instead of forking a second run with an empty history — the W&B-side
+    counterpart of find_resume_checkpoint's date-tolerant HF lookup below.
+    `run_id` itself (with the date) is still used as the display name, HF
+    checkpoint path, and everywhere else that benefits from a human-
+    readable timestamp."""
+    parts = run_id.split("-")
+    date_idx = len(parts) - 2
+    if 0 <= date_idx < len(parts) and parts[date_idx].isdigit() and len(parts[date_idx]) == 8:
+        del parts[date_idx]
+    return "-".join(parts)
+
+
 # ── Small helpers ────────────────────────────────────────────────────────────
 
 def _file_sha256(path: str, chunk_size: int = 1 << 20) -> str:
@@ -206,7 +223,9 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
         entity=entity,
         project=project,
         name=run_id,
-        id=run_id,           # deterministic — resume same run if re-run with same ID
+        id=_stable_wandb_id(run_id),  # date-independent — resumes the same
+                                       # run even if a dropped session picks
+                                       # back up on a later UTC date
         resume="allow",      # allows resuming an interrupted run
         config=flat_cfg,
         tags=wandb_cfg.get("tags", []),

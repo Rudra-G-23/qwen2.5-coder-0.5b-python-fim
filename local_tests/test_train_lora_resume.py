@@ -68,6 +68,22 @@ def patch_hfapi(monkeypatch, fake_state):
     return fake_state
 
 
+class TestStableWandbId:
+    def test_strips_date_component(self):
+        run_id = "qwen05b-lora-r16-e1-dsdistributed-20260821-a42"
+        assert train_lora._stable_wandb_id(run_id) == "qwen05b-lora-r16-e1-dsdistributed-a42"
+
+    def test_same_across_dates(self):
+        day1 = "qwen05b-lora-r16-e1-dsdistributed-20260821-a42"
+        day2 = "qwen05b-lora-r16-e1-dsdistributed-20260822-a42"
+        assert train_lora._stable_wandb_id(day1) == train_lora._stable_wandb_id(day2)
+
+    def test_different_attempt_stays_different(self):
+        a42 = train_lora._stable_wandb_id("qwen05b-lora-r16-e1-dsdistributed-20260821-a42")
+        a1 = train_lora._stable_wandb_id("qwen05b-lora-r16-e1-dsdistributed-20260821-a1")
+        assert a42 != a1
+
+
 class TestHFCheckpointCallback:
     def test_on_save_skips_missing_local_checkpoint(self, tmp_path, patch_hfapi):
         cb = train_lora.HFCheckpointCallback(hf_repo="org/repo", run_id="run1", hf_token="tok")
