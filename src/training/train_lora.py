@@ -24,6 +24,7 @@ import hashlib
 import json
 import os
 import random
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -411,24 +412,55 @@ class HFCheckpointCallback(TrainerCallback):
                 print(f"⚠  Could not prune old checkpoint step {s}: {exc}")
 
 
+def _run_id_date_pattern(run_id: str) -> "re.Pattern[str]":
+    """`run_id` with its {YYYYMMDD} component (second-to-last, per
+    build_run_id's format) wildcarded, so a checkpoint mirrored under
+    yesterday's run_id — a Kaggle session that started before UTC
+    midnight and got interrupted/resumed after it — still matches."""
+    parts = run_id.split("-")
+    date_idx = len(parts) - 2
+    pattern_parts = [
+        re.escape(p) if i != date_idx else r"\d{8}" for i, p in enumerate(parts)
+    ]
+    return re.compile("^" + "-".join(pattern_parts) + "$")
+
+
 def find_resume_checkpoint(hf_repo: str, run_id: str, hf_token: str) -> dict[str, Any] | None:
-    """Look up the latest mid-training checkpoint pushed for this exact
-    run_id. Returns the pointer dict (see HFCheckpointCallback.on_save) or
-    None if this run has never checkpointed to HF (fresh run, or a repo/HF
+    """Look up the latest mid-training checkpoint pushed for this run.
+    Returns the pointer dict (see HFCheckpointCallback.on_save) or None if
+    no matching run has ever checkpointed to HF (fresh run, or a repo/HF
     hiccup — either way, falling through to training from scratch is the
-    safe default)."""
+    safe default).
+
+    Checks the exact run_id first, then falls back to the same config
+    (model/rank/epochs/dataset/attempt) under a different {YYYYMMDD} —
+    run_id embeds today's date, so a session that crosses UTC midnight
+    before it's interrupted would otherwise never find its own
+    checkpoint on resume."""
     api = HfApi(token=hf_token)
     try:
         files = api.list_repo_files(hf_repo, repo_type="model")
     except Exception:
         return None
+
+    pointer_run_id = run_id
     if _latest_pointer_path(run_id) not in files:
-        return None
+        pattern = _run_id_date_pattern(run_id)
+        candidates = sorted(
+            f[len("checkpoints/"):].split("/")[0]
+            for f in files
+            if f.startswith("checkpoints/")
+            and f.endswith("/latest_checkpoint.json")
+            and pattern.match(f[len("checkpoints/"):].split("/")[0])
+        )
+        if not candidates:
+            return None
+        pointer_run_id = candidates[-1]  # YYYYMMDD sorts lexicographically -> most recent
 
     from huggingface_hub import hf_hub_download
 
     local_pointer = hf_hub_download(
-        repo_id=hf_repo, filename=_latest_pointer_path(run_id), repo_type="model", token=hf_token,
+        repo_id=hf_repo, filename=_latest_pointer_path(pointer_run_id), repo_type="model", token=hf_token,
     )
     with open(local_pointer, encoding="utf-8") as f:
         return json.load(f)
@@ -539,9 +571,12 @@ def train(
             resume_from_checkpoint = download_resume_checkpoint(
                 hf_repo, pointer, hf_token, output_dir
             )
+            source_note = (
+                f" (mirrored under {pointer['run_id']})" if pointer.get("run_id") != run_id else ""
+            )
             print(
                 f"↻ Resuming {run_id} from HF checkpoint step {pointer['latest_step']}"
-                f" → {resume_from_checkpoint}"
+                f" → {resume_from_checkpoint}{source_note}"
             )
         else:
             print(f"  No prior HF checkpoint for {run_id} — starting fresh.")

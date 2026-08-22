@@ -133,6 +133,42 @@ class TestFindResumeCheckpoint:
         result = train_lora.find_resume_checkpoint("org/repo", "run1", "tok")
         assert result == pointer
 
+    def test_falls_back_to_prior_date_when_session_crosses_midnight(
+        self, monkeypatch, patch_hfapi, tmp_path
+    ):
+        # Checkpoint was mirrored under yesterday's run_id (date embedded in
+        # the run_id per build_run_id); today's exact run_id has no
+        # checkpoint yet because the session just started fresh past UTC
+        # midnight. Resume should still find yesterday's checkpoint.
+        old_run_id = "qwen05b-lora-r16-e1-dsdistributed-20260821-a42"
+        new_run_id = "qwen05b-lora-r16-e1-dsdistributed-20260822-a42"
+        pointer = {
+            "run_id": old_run_id,
+            "latest_step": 6,
+            "path": f"checkpoints/{old_run_id}/checkpoint-6",
+        }
+        patch_hfapi["files"].add(f"checkpoints/{old_run_id}/latest_checkpoint.json")
+
+        local_file = tmp_path / "latest_checkpoint.json"
+        local_file.write_text(json.dumps(pointer))
+        monkeypatch.setattr(
+            "huggingface_hub.hf_hub_download", lambda **kwargs: str(local_file)
+        )
+
+        result = train_lora.find_resume_checkpoint("org/repo", new_run_id, "tok")
+        assert result == pointer
+
+    def test_does_not_fall_back_across_different_attempt(self, patch_hfapi):
+        # A different attempt number is a deliberately new run — must not
+        # accidentally resume from an unrelated attempt.
+        patch_hfapi["files"].add(
+            "checkpoints/qwen05b-lora-r16-e1-dsdistributed-20260821-a1/latest_checkpoint.json"
+        )
+        result = train_lora.find_resume_checkpoint(
+            "org/repo", "qwen05b-lora-r16-e1-dsdistributed-20260822-a2", "tok"
+        )
+        assert result is None
+
 
 class TestDownloadResumeCheckpoint:
     def test_builds_local_path_from_snapshot(self, monkeypatch, tmp_path):
