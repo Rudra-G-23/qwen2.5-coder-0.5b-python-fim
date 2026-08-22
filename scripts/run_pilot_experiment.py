@@ -78,7 +78,13 @@ from huggingface_hub import HfApi, hf_hub_download, snapshot_download
 
 from src.data_prep import FIM_MIDDLE, FIM_PREFIX, FIM_SUFFIX
 from src.training.safim_eval import run_safim_evaluation
-from src.training.train_lora import _deep_merge, build_run_id, init_wandb, train
+from src.training.train_lora import (
+    _deep_merge,
+    _stable_wandb_id,
+    build_run_id,
+    init_wandb,
+    train,
+)
 
 
 def load_config(config_path: str) -> dict:
@@ -140,6 +146,7 @@ def run(
     token: str | None,
     only_variant: str | None = None,
     safim_max_samples: int = 100,
+    resume_run_id: str | None = None,
 ) -> None:
     base_config = pilot_cfg["base_config"]
     base_cfg = load_config(base_config)
@@ -194,6 +201,15 @@ def run(
             merged_cfg = _deep_merge(base_cfg, overrides)
             run_id = build_run_id(merged_cfg)
             subfolder = f"{variant['output_subfolder']}/seed{seed}"
+
+            # --resume-run-id targets exactly one (variant, seed): its
+            # date-independent identity (model/rank/epochs/dataset_version=
+            # variant/attempt=seed) must match this loop iteration's. Only
+            # that iteration gets training.resume_run_id forced through —
+            # every other seed/variant in this run trains/resumes normally.
+            if resume_run_id and _stable_wandb_id(resume_run_id) == _stable_wandb_id(run_id):
+                overrides["training"]["resume_run_id"] = resume_run_id
+                print(f"  ↻ Explicit resume requested for this seed — forcing run_id={resume_run_id}")
 
             if _subfolder_already_pushed(output_hf_repo, subfolder, token):
                 # Already trained + pushed in a prior (interrupted) session —
@@ -259,6 +275,15 @@ def _parse_args() -> argparse.Namespace:
         help="SAFIM sample count per model (Base + LoRA-FT) for each seed's "
              "post-training eval (default: 100).",
     )
+    parser.add_argument(
+        "--resume-run-id", default=None,
+        help="Paste an exact run_id (e.g. from a Crashed W&B run's title, "
+             "'qwen05b-lora-r16-e1-dsdistributed-20260821-a42') to force-resume "
+             "that specific (variant, seed)'s HF checkpoint and W&B run/log "
+             "instead of the automatic date-tolerant resume. Only the one "
+             "seed whose identity matches is affected; every other seed in "
+             "this run trains/resumes normally. Omit for normal behavior.",
+    )
     return parser.parse_args()
 
 
@@ -268,4 +293,10 @@ if __name__ == "__main__":
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
         raise SystemExit("HF_TOKEN must be set to load FIM variants and push adapters.")
-    run(cfg, token=hf_token, only_variant=args.variant, safim_max_samples=args.safim_max_samples)
+    run(
+        cfg,
+        token=hf_token,
+        only_variant=args.variant,
+        safim_max_samples=args.safim_max_samples,
+        resume_run_id=args.resume_run_id,
+    )
