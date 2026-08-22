@@ -148,9 +148,19 @@ def _gpu_type() -> str:
 
 # ── W&B + Weave initialisation ────────────────────────────────────────────────
 
-def init_wandb(cfg: dict, run_id: str) -> Any | None:
+def init_wandb(cfg: dict, run_id: str, explicit_resume: bool = False) -> Any | None:
     """
     Initialise Weights & Biases and Weave for experiment tracking.
+
+    Args:
+        explicit_resume: True when `run_id` came from cfg["training"]["resume_run_id"]
+            (the user pasted an exact run_id to resume) rather than being
+            freshly built by build_run_id(). In that case `run_id` IS the
+            wandb id to reattach to verbatim — the crashed run was created
+            under that exact id — so resume="must" is used (fail loudly if
+            it doesn't exist, instead of silently forking a new run on a
+            typo). Otherwise the id is date-stripped via _stable_wandb_id
+            and resume="allow" (see that helper's docstring).
 
     Returns the active wandb.Run if W&B is available and WANDB_API_KEY is set,
     otherwise returns None so training proceeds without tracking.
@@ -223,10 +233,12 @@ def init_wandb(cfg: dict, run_id: str) -> Any | None:
         entity=entity,
         project=project,
         name=run_id,
-        id=_stable_wandb_id(run_id),  # date-independent — resumes the same
-                                       # run even if a dropped session picks
-                                       # back up on a later UTC date
-        resume="allow",      # allows resuming an interrupted run
+        id=run_id if explicit_resume else _stable_wandb_id(run_id),
+        # "must": the user explicitly pasted a run_id to resume — fail
+        # loudly if it doesn't exist rather than silently forking a new
+        # run. "allow": normal path, date-independent id (see
+        # _stable_wandb_id) so a same-config run auto-reattaches.
+        resume="must" if explicit_resume else "allow",
         config=flat_cfg,
         tags=wandb_cfg.get("tags", []),
         notes=wandb_cfg.get("notes", ""),
@@ -431,7 +443,7 @@ class HFCheckpointCallback(TrainerCallback):
                 print(f"⚠  Could not prune old checkpoint step {s}: {exc}")
 
 
-def _run_id_date_pattern(run_id: str) -> "re.Pattern[str]":
+def _run_id_date_pattern(run_id: str) -> re.Pattern[str]:
     """`run_id` with its {YYYYMMDD} component (second-to-last, per
     build_run_id's format) wildcarded, so a checkpoint mirrored under
     yesterday's run_id — a Kaggle session that started before UTC
@@ -559,20 +571,22 @@ def train(
         cfg = _deep_merge(cfg, overrides)
 
     # ── Build deterministic run ID ────────────────────────────────────────────
-    run_id = build_run_id(cfg)
+    resume_run_id = (cfg["training"].get("resume_run_id") or "").strip()
+    explicit_resume = bool(resume_run_id)
+    run_id = resume_run_id if explicit_resume else build_run_id(cfg)
 
     print("=" * 60)
     print("LoRA Fine-tuning — Qwen2.5-Coder-0.5B  |  Python FIM")
     print("=" * 60)
     print(f"Config    : {config_path}")
-    print(f"Run ID    : {run_id}")
+    print(f"Run ID    : {run_id}" + ("  (explicit resume)" if explicit_resume else ""))
     print(f"Model     : {cfg['model']['name']}")
     print(f"LoRA r    : {cfg['lora']['r']}   alpha : {cfg['lora']['alpha']}")
     print(f"Epochs    : {cfg['training']['num_epochs']}")
     print()
 
     # ── 1. Initialise W&B + Weave (graceful no-op if key not set) ────────────
-    wandb_run = init_wandb(cfg, run_id)
+    wandb_run = init_wandb(cfg, run_id, explicit_resume=explicit_resume)
     report_to = "wandb" if wandb_run is not None else "none"
 
     # ── 1b. Resolve HF push destination + look for a mid-training checkpoint
@@ -582,6 +596,13 @@ def train(
     output_dir = cfg["output"]["dir"]
     hf_repo = cfg["output"]["hf_repo"]
     hf_token = os.environ.get("HF_TOKEN")
+
+    if explicit_resume and not (hf_token and cfg["training"].get("resume_from_hf", True)):
+        raise ValueError(
+            f"training.resume_run_id={run_id!r} was set, but checkpoint lookup is "
+            "disabled (HF_TOKEN not set, or training.resume_from_hf: false) — "
+            "can't honor an explicit resume request."
+        )
 
     resume_from_checkpoint: str | None = None
     if hf_token and cfg["training"].get("resume_from_hf", True):
@@ -596,6 +617,13 @@ def train(
             print(
                 f"↻ Resuming {run_id} from HF checkpoint step {pointer['latest_step']}"
                 f" → {resume_from_checkpoint}{source_note}"
+            )
+        elif explicit_resume:
+            raise ValueError(
+                f"training.resume_run_id={run_id!r} was set, but no HF checkpoint "
+                f"exists at checkpoints/{run_id}/latest_checkpoint.json in {hf_repo}. "
+                "Double-check the run_id (copy it exactly from the crashed W&B run's "
+                "title), or clear resume_run_id to start a fresh run."
             )
         else:
             print(f"  No prior HF checkpoint for {run_id} — starting fresh.")

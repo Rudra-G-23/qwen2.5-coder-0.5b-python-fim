@@ -38,6 +38,13 @@ training:
   # HFCheckpointCallback) and resumes from it instead of starting over —
   # survives a lost Kaggle session without re-training from the base model.
   resume_from_hf: true
+  # Explicit override: paste an exact run_id (e.g. from a Crashed W&B run's
+  # title, "qwen05b-lora-r16-e1-dsdistributed-20260821-a42") to force
+  # resuming that exact run/checkpoint instead of building today's run_id.
+  # Errors loudly if that run_id has no HF checkpoint or no matching W&B
+  # run, rather than silently starting fresh. Leave "" for normal behavior
+  # (auto-built run_id, resumes automatically if one already matches).
+  resume_run_id: ""
 
 data:
   path: "data/fim_dataset.jsonl"
