@@ -1,0 +1,108 @@
+#!/usr/bin/env python
+"""
+scripts/run_safim_eval_1000.py
+Phase B entrypoint: evaluate Base, Random-LoRA, and Distributed-LoRA on the
+fixed `experiment/safim_eval_1000` FIM task set (built by
+scripts/generate_safim_eval_1000.py), broken down by fim_type bucket.
+
+This is the long-running, GPU, interruption-prone step (3 models x up to
+1000 unbatched greedy-decode generations) — src.training.evaluate's
+evaluate_model_by_type resumes per-model from a local + HF-mirrored
+checkpoint JSONL, so a crash or Kaggle session restart loses at most
+`checkpoint_every_n_records` records for whichever model was in flight, not
+the whole run.
+
+Usage:
+    python scripts/run_safim_eval_1000.py
+    python scripts/run_safim_eval_1000.py --config configs/data/safim_eval_1000.yaml
+    python scripts/run_safim_eval_1000.py --max-samples 50   # fast calibration run
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make `src` importable
+
+import yaml
+from huggingface_hub import hf_hub_download
+
+from src.training.evaluate import (
+    download_adapter_snapshot,
+    load_fim_eval_records,
+    run_evaluation_nway_by_type,
+)
+
+
+def load_config(config_path: str) -> dict:
+    with open(config_path, encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _resolve_adapter_path(model_cfg: dict, model_hf_repo: str, token: str | None) -> str | None:
+    subfolder = model_cfg.get("adapter_subfolder")
+    if not subfolder:
+        return None
+    return download_adapter_snapshot(model_hf_repo, subfolder, token=token)
+
+
+def run(config: dict, token: str | None, max_samples_override: int | None) -> None:
+    ev = config["evaluation"]
+    output = config["output"]
+
+    local_parquet = hf_hub_download(
+        repo_id=output["hf_dataset_repo"],
+        filename=f"{output['folder']}/data/fim_{output['config_name']}.parquet",
+        repo_type="dataset",
+        token=token,
+    )
+    test_records = load_fim_eval_records(local_parquet)
+    print(f"Loaded {len(test_records)} fixed eval tasks from {output['folder']}")
+
+    models = [
+        {"label": m["label"], "adapter_path": _resolve_adapter_path(m, ev["model_hf_repo"], token)}
+        for m in ev["models"]
+    ]
+
+    max_samples = max_samples_override if max_samples_override is not None else ev.get("max_samples")
+
+    run_evaluation_nway_by_type(
+        base_model_name=ev["base_model_name"],
+        models=models,
+        test_records=test_records,
+        output_dir=ev["output_dir"],
+        max_samples=max_samples,
+        hf_checkpoint_repo=output["hf_dataset_repo"],
+        hf_checkpoint_folder=output["results_folder"],
+        checkpoint_every_n_records=ev["checkpoint_every_n_records"],
+        token=token,
+    )
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Evaluate Base/Random-LoRA/Distributed-LoRA on the fixed safim_eval_1000 set."
+    )
+    parser.add_argument(
+        "--config", default="configs/data/safim_eval_1000.yaml",
+        help="Path to the safim_eval_1000 config.",
+    )
+    parser.add_argument(
+        "--max-samples", type=int, default=None,
+        help="Evaluate only the first N tasks per model instead of the full set — for a fast "
+             "calibration run to measure real per-sample throughput. Overrides the config's "
+             "evaluation.max_samples.",
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = _parse_args()
+    cfg = load_config(args.config)
+    hf_token = os.environ.get("HF_TOKEN")
+    if not hf_token:
+        raise SystemExit("HF_TOKEN must be set to load the eval set and adapters.")
+    run(cfg, token=hf_token, max_samples_override=args.max_samples)

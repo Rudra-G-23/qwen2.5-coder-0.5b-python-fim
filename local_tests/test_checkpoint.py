@@ -341,3 +341,39 @@ class TestRenderMetadata:
         assert metadata["counts"]["raw_files_scanned"] == 0
         assert metadata["counts"]["files_kept"] == 0
         assert metadata["counts"]["quality_reject_by_reason"] == {}
+
+
+@pytest.fixture
+def fake_hub_seed_source(tmp_path, monkeypatch):
+    """A different, already-complete path_prefix's seen_hashes.json —
+    stand-in for sample_filtered_data_10000/checkpoints/seen_hashes.json
+    when a brand-new pool seeds its dedup set from it."""
+    payload = {
+        "as_of_shard_index": 9,
+        "as_of_row_offset": 13500,
+        "hashes": ["seed_hash_a", "seed_hash_b", "seed_hash_c"],
+    }
+    path = tmp_path / "seen_hashes.json"
+    path.write_text(json.dumps(payload))
+
+    def fake_hf_hub_download(repo_id, filename, repo_type="dataset", token=None):
+        if filename == "source_prefix/checkpoints/seen_hashes.json":
+            return str(path)
+        raise EntryNotFoundError(f"unexpected filename: {filename}")
+
+    monkeypatch.setattr(ckpt, "hf_hub_download", fake_hf_hub_download)
+    return payload
+
+
+class TestSeedDedupFromPrefix:
+    def test_returns_source_prefixs_hash_set(self, fake_hub_seed_source):
+        seeded = ckpt.seed_dedup_from_prefix("fake/repo", "source_prefix")
+        assert seeded == {"seed_hash_a", "seed_hash_b", "seed_hash_c"}
+
+    def test_missing_source_seen_hashes_propagates_not_swallowed(self, monkeypatch):
+        def fake_hf_hub_download(repo_id, filename, repo_type="dataset", token=None):
+            raise EntryNotFoundError("source prefix has no seen_hashes.json yet")
+
+        monkeypatch.setattr(ckpt, "hf_hub_download", fake_hf_hub_download)
+        with pytest.raises(EntryNotFoundError):
+            ckpt.seed_dedup_from_prefix("fake/repo", "incomplete_prefix")

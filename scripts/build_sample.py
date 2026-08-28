@@ -49,17 +49,51 @@ def load_config(config_path: str) -> dict:
 
 
 def _resume_state(
-    hf_repo: str, token: str | None, path_prefix: str
+    hf_repo: str, token: str | None, path_prefix: str, continue_from: str | None = None
 ) -> tuple[int, int, int, ExactDedup, tuple[int, int] | None]:
     """Returns (start_shard_index, start_row_offset, cumulative_collected,
     dedup, latest_checkpoint_key). latest_checkpoint_key is
     (shard_index, row_offset) of the most recent checkpoint this dedup set
     is known to fully account for, or None if there's no checkpoint history
-    yet — run_session threads it through to save_seen_hashes at the end."""
+    yet — run_session threads it through to save_seen_hashes at the end.
+
+    `continue_from`, if given, only matters on the "no checkpoint history
+    yet" branch below (this path_prefix's very first-ever session). It makes
+    this pool a strict *continuation* of a different, already-complete
+    prefix's stream:
+      1. its dedup set is seeded from that prefix's final seen_hashes.json
+         (src.curation.checkpoint.seed_dedup_from_prefix), and
+      2. streaming starts at that prefix's highest checkpoint position
+         (shard_index + 1, row_offset) instead of (0, 0),
+    so every file collected here is strictly newer than anything the source
+    prefix scanned AND hash-disjoint from it — disjoint by construction, not
+    by a downstream filter, and without re-streaming rows the source prefix
+    already processed. `cumulative_collected` still starts at 0 — that
+    counts THIS pool's own files, not the source prefix's.
+
+    Every later resume takes the branch below unchanged and ignores
+    `continue_from` — this prefix's own checkpoint history (which by then
+    already includes the seeded hashes, since save_seen_hashes persists the
+    full dedup set) is authoritative from then on."""
     checkpoints = ckpt.load_all_checkpoints(hf_repo, token=token, path_prefix=path_prefix)
     resume = ckpt.pick_resume_checkpoint(checkpoints)
     if resume is None:
-        return 0, 0, 0, ExactDedup(), None
+        seed_hashes: set[str] = set()
+        start_shard_index, start_row_offset = 0, 0
+        if continue_from:
+            seed_hashes = ckpt.seed_dedup_from_prefix(hf_repo, continue_from, token=token)
+            source_resume = ckpt.pick_resume_checkpoint(
+                ckpt.load_all_checkpoints(hf_repo, token=token, path_prefix=continue_from)
+            )
+            if source_resume is not None:
+                start_shard_index = source_resume["shard_index"] + 1
+                start_row_offset = source_resume["row_offset"]
+            print(
+                f"Continuing from {continue_from!r} (first run for this prefix only): "
+                f"seeded dedup set with {len(seed_hashes)} hashes, streaming from "
+                f"shard_index={start_shard_index}, row_offset={start_row_offset}."
+            )
+        return start_shard_index, start_row_offset, 0, ExactDedup(seed_hashes), None
 
     seen_hashes = ckpt.load_seen_hashes(
         hf_repo, checkpoints, resume, path_prefix=path_prefix, token=token
@@ -140,8 +174,9 @@ def run_session(config: dict, max_gb: float, token: str | None) -> None:
     max_bytes = max_gb * BYTES_PER_GB
     source_meta = {"dataset": config["source"]["dataset"], "split": config["source"]["split"]}
 
+    continue_from = config["checkpoint"].get("continue_from_path_prefix")
     shard_index, row_offset, cumulative_collected, dedup, latest_key = _resume_state(
-        hf_repo, token, path_prefix
+        hf_repo, token, path_prefix, continue_from=continue_from
     )
     print(f"Resuming at shard_index={shard_index}, row_offset={row_offset}, "
           f"cumulative_files_collected={cumulative_collected}")

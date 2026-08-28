@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.fim.distribution_planned import sample_planned
+from src.fim.distribution_planned import sample_fixed_bucket_counts, sample_planned
 from src.fim.distribution_random import sample_random
 
 _TEMPLATE = '''
@@ -147,5 +147,72 @@ class TestSamplePlanned:
         b, _ = sample_planned(
             _files(10), total_examples=50, max_spans_per_file=10,
             planned_distribution=PLANNED_DISTRIBUTION, seed=5,
+        )
+        assert a == b
+
+
+# Mirrors safim_eval_1000's literal bucket_quota (line=150/statement=150/
+# expression=150/block=120/function-body=120/method-body=100/api-call=120/
+# class-level=90), scaled down for a fast test pool.
+BUCKET_QUOTA = {
+    "line": 10,
+    "statement": 10,
+    "expression": 10,
+    "block": 8,
+    "function-body": 8,
+    "method-body": 6,
+    "class-level": 3,
+    "api-call": 2,
+}
+
+
+class TestSampleFixedBucketCounts:
+    def test_hits_literal_counts_not_percentages(self):
+        """Unlike sample_planned's percentage-of-total, bucket_counts are
+        exact integers regardless of total pool size — every type should
+        land at (or, if pool-bound, below) its own literal count."""
+        records, shortfall = sample_fixed_bucket_counts(
+            _files(100), bucket_counts=BUCKET_QUOTA, max_spans_per_file=50, seed=1,
+        )
+        counts = Counter(r["fim_type"] for r in records)
+        assert len(records) > 0
+
+        for span_type, target in BUCKET_QUOTA.items():
+            if span_type in shortfall:
+                assert counts.get(span_type, 0) < target
+            else:
+                assert counts.get(span_type, 0) == target
+
+    def test_total_matches_sum_of_quota_when_no_shortfall(self):
+        records, shortfall = sample_fixed_bucket_counts(
+            _files(100), bucket_counts=BUCKET_QUOTA, max_spans_per_file=50, seed=1,
+        )
+        if not shortfall:
+            assert len(records) == sum(BUCKET_QUOTA.values())
+
+    def test_shortfall_reported_not_fabricated(self):
+        """With very few files, some buckets can't fill their literal count
+        from such a small pool — must be reported, not padded with
+        fabricated spans."""
+        records, shortfall = sample_fixed_bucket_counts(
+            _files(3), bucket_counts=BUCKET_QUOTA, max_spans_per_file=50, seed=1,
+        )
+        assert shortfall  # at least one bucket came up short at this pool size
+        for record in records:
+            assert record["middle"].strip() != ""
+
+    def test_respects_max_spans_per_file(self):
+        records, _ = sample_fixed_bucket_counts(
+            _files(5), bucket_counts=BUCKET_QUOTA, max_spans_per_file=3, seed=1,
+        )
+        counts = Counter(r["content_id"] for r in records)
+        assert all(c <= 3 for c in counts.values())
+
+    def test_deterministic_given_seed(self):
+        a, _ = sample_fixed_bucket_counts(
+            _files(10), bucket_counts=BUCKET_QUOTA, max_spans_per_file=10, seed=5,
+        )
+        b, _ = sample_fixed_bucket_counts(
+            _files(10), bucket_counts=BUCKET_QUOTA, max_spans_per_file=10, seed=5,
         )
         assert a == b

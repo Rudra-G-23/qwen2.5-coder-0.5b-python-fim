@@ -249,6 +249,42 @@ def load_seen_hashes(
     return hashes
 
 
+# ── Cross-prefix dedup seeding ────────────────────────────────────────────────
+#
+# scripts/build_sample.py's _resume_state calls this exactly once, on a new
+# path_prefix's very first-ever session (no checkpoint history yet), to seed
+# its dedup set from a DIFFERENT, already-complete prefix's final hash set —
+# so the new pool is disjoint from the source pool by construction instead of
+# needing a downstream filter. Once the new prefix has its own checkpoint
+# history, its own load_seen_hashes cache (which already includes the seeded
+# hashes, since save_seen_hashes persists everything currently in the dedup
+# set) takes over normally and this function is never called again for it.
+
+
+def seed_dedup_from_prefix(
+    repo_id: str,
+    source_path_prefix: str,
+    token: str | None = None,
+    repo_type: str = "dataset",
+) -> set[str]:
+    """Read `{source_path_prefix}/checkpoints/seen_hashes.json` from a
+    different, already-complete path_prefix in the same repo, and return its
+    hash set. Deliberately does NOT catch EntryNotFoundError/
+    RepositoryNotFoundError — a config asking to seed from a source prefix
+    that doesn't have a finished seen_hashes.json yet is a configuration
+    error and must fail loudly, not silently produce a pool that isn't
+    actually disjoint from the source."""
+    local_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=_seen_hashes_path(source_path_prefix),
+        repo_type=repo_type,
+        token=token,
+    )
+    with open(local_path, encoding="utf-8") as f:
+        cached = json.load(f)
+    return set(cached["hashes"])
+
+
 # ── Upload (idempotent) ───────────────────────────────────────────────────────
 
 

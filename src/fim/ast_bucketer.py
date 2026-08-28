@@ -435,21 +435,35 @@ def plot_bucket_distribution(
     return out_path
 
 
+_DEFAULT_STAGE_LABEL = "FIM variant generation (10k pilot sample)"
+_DEFAULT_CHECKPOINTS_NOTE = (
+    "empty — generation is a single in-memory pass over the 10k-file "
+    "sample (minutes, not hours), nothing to resume"
+)
+
+
 def render_experiment_metadata(
     folder_name: str,
     records: list[dict[str, Any]],
     sampling_cfg: dict[str, Any],
     shortfall: dict[str, int] | None = None,
+    stage_label: str = _DEFAULT_STAGE_LABEL,
+    checkpoints_note: str = _DEFAULT_CHECKPOINTS_NOTE,
 ) -> dict[str, Any]:
     """Aggregate metadata.json for one experiment/{folder_name}/ folder
     (`folder_name` is e.g. "random_data" or "distributed_data" — the HF
     folder name, not the internal random/planned code) — counts + config,
     never a per-row dump (data-stage-2.md §3; per-row fim_type/content_id/
     span metadata already lives on every record in the parquet file
-    itself)."""
+    itself).
+
+    `stage_label`/`checkpoints_note` default to the original 10k-pilot
+    wording (every existing call site keeps that text unchanged); pass
+    overrides for a folder generated under different circumstances — e.g.
+    experiment/safim_eval_1000's fixed, never-retrained eval set."""
     return {
         "folder": f"experiment/{folder_name}",
-        "stage": "FIM variant generation (10k pilot sample)",
+        "stage": stage_label,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "variant": folder_name,
         "sampling_config": dict(sampling_cfg),
@@ -458,10 +472,7 @@ def render_experiment_metadata(
             "by_fim_type": count_by_fim_type(records),
         },
         "shortfall_vs_target": dict(shortfall or {}),
-        "checkpoints": (
-            "empty — generation is a single in-memory pass over the 10k-file "
-            "sample (minutes, not hours), nothing to resume"
-        ),
+        "checkpoints": checkpoints_note,
     }
 
 
@@ -471,8 +482,12 @@ def write_experiment_metadata_json(
     sampling_cfg: dict[str, Any],
     shortfall: dict[str, int] | None = None,
     out_path: str | None = None,
+    stage_label: str = _DEFAULT_STAGE_LABEL,
+    checkpoints_note: str = _DEFAULT_CHECKPOINTS_NOTE,
 ) -> Path:
-    metadata = render_experiment_metadata(folder_name, records, sampling_cfg, shortfall)
+    metadata = render_experiment_metadata(
+        folder_name, records, sampling_cfg, shortfall, stage_label, checkpoints_note
+    )
     path = Path(out_path or f"reports/experiment_{folder_name}_metadata.json")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")

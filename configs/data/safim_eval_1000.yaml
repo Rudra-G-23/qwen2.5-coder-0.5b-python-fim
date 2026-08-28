@@ -1,0 +1,59 @@
+# configs/data/safim_eval_1000.yaml
+# Fixed, never-retrained-on FIM evaluation set: ~750 files randomly drawn
+# from stack_v3_python_only_data_without_fim — a small pool that *continues*
+# the 10k pilot's stack-v3-train stream past sample_filtered_data_10000's
+# final checkpoint (shard 9 / row 13500), so every file in it is strictly
+# newer than anything the pilot scanned and hash-disjoint from it (see
+# configs/data/stack_v3_eval_pool_no_fim.yaml's continue_from_path_prefix).
+# Bucketed into exactly 1000 FIM tasks per bucket_quota below. Once pushed to
+# output.folder, scripts/generate_safim_eval_1000.py refuses to regenerate it
+# (idempotency guard) unless --force is passed — this set must stay fixed for
+# every future Base/Random-LoRA/Distributed-LoRA comparison to be apples-to-
+# apples.
+
+source:
+  hf_dataset_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
+  path_prefix: "stack_v3_python_only_data_without_fim"
+
+output:
+  hf_dataset_repo: "Rudra-G-23/the-stack-v3-python-fim-data"
+  folder: "experiment/safim_eval_1000"
+  config_name: "safim_eval_1000"
+  # sibling of output.folder, never written inside it — eval *results* must
+  # never touch the fixed eval-set folder's idempotency guarantee.
+  results_folder: "experiment/safim_eval_1000_results"
+
+sampling:
+  source_file_count: 750       # within the requested ~500-1000 "completely new files" range
+  max_spans_per_file: 6
+  seed: 42
+
+# Literal per-bucket counts (NOT percentages) — sums to 1000.
+bucket_quota:
+  line: 150
+  statement: 150
+  expression: 150
+  block: 120
+  function-body: 120
+  method-body: 100
+  api-call: 120
+  class-level: 90
+
+evaluation:
+  base_model_name: "Qwen/Qwen2.5-Coder-0.5B"
+  model_hf_repo: "Rudra-G-23/qwen2.5-coder-0.5b-python-fim"
+  models:
+    - label: "Base"
+      adapter_subfolder: null
+    - label: "Random-LoRA"
+      adapter_subfolder: "experiment/random_model/seed42"
+    - label: "Distributed-LoRA"
+      adapter_subfolder: "experiment/distributed_model/seed42"
+  max_samples: null            # null = all 1000; set lower for a fast calibration run
+  checkpoint_every_n_records: 50
+  output_dir: "results/safim_eval_1000"
+
+wandb:
+  # Same project as data-curation/FIM-generation runs (data-stage-1.md §7's
+  # job_type convention distinguishes runs, not separate projects).
+  project: "521er1007-national-institute-of-technology-rourkela/stack-v3-python-fim-data"
