@@ -42,6 +42,40 @@ def load_config(config_path: str) -> dict:
         return yaml.safe_load(f)
 
 
+def init_wandb_run(project: str, name: str, job_type: str, group: str, tags: list[str]):
+    """`project` may be "entity/project" (recommended — data-curation, FIM
+    generation and this eval all share the `stack-v3-python-fim-data`
+    project, kept separate from training's `qwen-coder-python-fim` one) or a
+    bare project name. Mirrors scripts/generate_fim_variants.py's
+    init_wandb_run / src/curation/wandb_logger.py's init_curation_run — same
+    graceful no-op if WANDB_API_KEY isn't set, same entity/project split,
+    same joint Weave init inside the W&B run. Returns the active wandb.Run or
+    None so the eval always runs even with zero W&B setup."""
+    if not os.environ.get("WANDB_API_KEY"):
+        print("⚠  WANDB_API_KEY not set — skipping W&B eval tracking (graphs stay local only).")
+        return None
+
+    try:
+        import wandb
+        import weave  # noqa: F401  (imported for side-effect: patch tracing)
+    except ImportError as exc:
+        print(f"⚠  W&B / Weave not installed ({exc}) — skipping eval tracking.")
+        return None
+
+    full_project = project
+    if "/" in full_project:
+        entity, bare_project = full_project.split("/", 1)
+    else:
+        entity, bare_project = None, full_project
+
+    run = wandb.init(
+        entity=entity, project=bare_project, name=name, job_type=job_type, group=group, tags=tags
+    )
+    weave.init(full_project)
+    print(f"✓ W&B eval run : {run.url}")
+    return run
+
+
 def _resolve_adapter_path(model_cfg: dict, model_hf_repo: str, token: str | None) -> str | None:
     subfolder = model_cfg.get("adapter_subfolder")
     if not subfolder:
@@ -52,6 +86,20 @@ def _resolve_adapter_path(model_cfg: dict, model_hf_repo: str, token: str | None
 def run(config: dict, token: str | None, max_samples_override: int | None) -> None:
     ev = config["evaluation"]
     output = config["output"]
+
+    wandb_project = config.get("wandb", {}).get(
+        "project", "stack-v3-python-fim-data"
+    )
+    wandb_run = init_wandb_run(
+        wandb_project,
+        name="safim_eval_1000",
+        job_type="evaluation",
+        # clusters this eval next to the pilot's training/generation runs on
+        # one W&B comparison panel (seed42 = the pilot seed both LoRA
+        # variants were trained on).
+        group=f"experiment-{config.get('sampling', {}).get('seed', 42)}",
+        tags=["safim_eval_1000", "base-vs-random-vs-distributed"],
+    )
 
     local_parquet = hf_hub_download(
         repo_id=output["hf_dataset_repo"],
@@ -69,17 +117,22 @@ def run(config: dict, token: str | None, max_samples_override: int | None) -> No
 
     max_samples = max_samples_override if max_samples_override is not None else ev.get("max_samples")
 
-    run_evaluation_nway_by_type(
-        base_model_name=ev["base_model_name"],
-        models=models,
-        test_records=test_records,
-        output_dir=ev["output_dir"],
-        max_samples=max_samples,
-        hf_checkpoint_repo=output["hf_dataset_repo"],
-        hf_checkpoint_folder=output["results_folder"],
-        checkpoint_every_n_records=ev["checkpoint_every_n_records"],
-        token=token,
-    )
+    try:
+        run_evaluation_nway_by_type(
+            base_model_name=ev["base_model_name"],
+            models=models,
+            test_records=test_records,
+            output_dir=ev["output_dir"],
+            max_samples=max_samples,
+            hf_checkpoint_repo=output["hf_dataset_repo"],
+            hf_checkpoint_folder=output["results_folder"],
+            checkpoint_every_n_records=ev["checkpoint_every_n_records"],
+            token=token,
+            wandb_run=wandb_run,
+        )
+    finally:
+        if wandb_run is not None:
+            wandb_run.finish()
 
 
 def _parse_args() -> argparse.Namespace:
