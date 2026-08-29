@@ -27,6 +27,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # make `src` importable
 
+# This pipeline loads exactly one 0.5B model at a time (Base, then each
+# LoRA) — it never wants model parallelism. On a multi-GPU box (e.g. Kaggle
+# "GPU T4 x2") unsloth otherwise shards even this tiny model across
+# cuda:0/cuda:1, and generation then dies with "Expected all tensors to be
+# on the same device" once embed_tokens lands on a different GPU than the
+# tokenised inputs. Pin to one visible GPU before torch is imported (which
+# happens transitively via src.training.evaluate below). Respect an
+# explicit override if the caller already set it.
+os.environ.setdefault("CUDA_VISIBLE_DEVICES", "0")
+
 import yaml
 from huggingface_hub import hf_hub_download
 
