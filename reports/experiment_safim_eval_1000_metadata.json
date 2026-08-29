@@ -1,0 +1,36 @@
+{
+  "folder": "experiment/safim_eval_1000",
+  "stage": "Fixed FIM eval set (safim_eval_1000) — held-out, never trained on",
+  "generated_at": "2026-08-29T13:40:03.033399+00:00",
+  "variant": "safim_eval_1000",
+  "sampling_config": {
+    "source_file_count": 750,
+    "max_spans_per_file": 6,
+    "seed": 42,
+    "bucket_quota": {
+      "line": 150,
+      "statement": 150,
+      "expression": 150,
+      "block": 120,
+      "function-body": 120,
+      "method-body": 100,
+      "api-call": 120,
+      "class-level": 90
+    }
+  },
+  "counts": {
+    "total_examples": 1000,
+    "by_fim_type": {
+      "line": 150,
+      "statement": 150,
+      "expression": 150,
+      "block": 120,
+      "function-body": 120,
+      "method-body": 100,
+      "api-call": 120,
+      "class-level": 90
+    }
+  },
+  "shortfall_vs_target": {},
+  "checkpoints": "empty — single in-memory pass over the sampled files (seconds-to-minutes), nothing to resume; regeneration is guarded by an idempotency check in scripts/generate_safim_eval_1000.py (--force only) since this set must never change once used for evaluation"
+}

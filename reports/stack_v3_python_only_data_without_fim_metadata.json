@@ -1,0 +1,26 @@
+{
+  "folder": "stack_v3_python_only_data_without_fim",
+  "stage": "sample filter (10k pilot)",
+  "generated_at": "2026-08-29T13:39:24.635264+00:00",
+  "source": {
+    "dataset": "HuggingFaceCode/stack-v3-train",
+    "split": "train"
+  },
+  "counts": {
+    "raw_files_scanned": 34930,
+    "files_kept": 2000,
+    "reject_by_stage": {
+      "language_reject": 32583,
+      "vendor_reject": 2,
+      "license_reject": 0,
+      "quality_reject": 308,
+      "secret_reject": 37,
+      "exact_dup_reject": 0
+    },
+    "quality_reject_by_reason": {
+      "size_out_of_bounds": 189,
+      "ast_invalid": 117,
+      "minified_or_generated": 2
+    }
+  }
+}

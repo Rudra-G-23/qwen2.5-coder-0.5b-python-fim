@@ -1,0 +1,34 @@
+{
+  "os":  "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43",
+  "python":  "CPython 3.13.14",
+  "startedAt":  "2026-08-29T13:36:33.734081Z",
+  "args":  [
+    "--config",
+    "configs/data/stack_v3_eval_pool_no_fim.yaml",
+    "--max-gb",
+    "0.5"
+  ],
+  "program":  "/home/rudra/open/qwen2.5-coder-0.5b-python-fim/scripts/build_sample.py",
+  "codePath":  "scripts/build_sample.py",
+  "codePathLocal":  "scripts/build_sample.py",
+  "git":  {
+    "remote":  "git@github.com:Rudra-G-23/qwen2.5-coder-0.5b-python-fim.git",
+    "commit":  "8f4a0fea2ad9a43213ea2e17f6776d3abe252fd4"
+  },
+  "email":  "rudraprasadbhuyan999@gmail.com",
+  "root":  "/home/rudra/open/qwen2.5-coder-0.5b-python-fim",
+  "host":  "LAPTOP-E03IAI0P",
+  "executable":  "/home/rudra/open/qwen2.5-coder-0.5b-python-fim/.venv/bin/python3",
+  "cpu_count":  3,
+  "cpu_count_logical":  6,
+  "disk":  {
+    "/":  {
+      "total":  "1081101176832",
+      "used":  "42562707456"
+    }
+  },
+  "memory":  {
+    "total":  "10429255680"
+  },
+  "writerId":  "chfn943dhb1yan1oggod1ijahck70vhm"
+}

@@ -1,0 +1,50 @@
+_wandb:
+    value:
+        cli_version: 0.28.1
+        e:
+            chfn943dhb1yan1oggod1ijahck70vhm:
+                args:
+                    - --config
+                    - configs/data/stack_v3_eval_pool_no_fim.yaml
+                    - --max-gb
+                    - "0.5"
+                codePath: scripts/build_sample.py
+                codePathLocal: scripts/build_sample.py
+                cpu_count: 3
+                cpu_count_logical: 6
+                disk:
+                    /:
+                        total: "1081101176832"
+                        used: "42562707456"
+                email: rudraprasadbhuyan999@gmail.com
+                executable: /home/rudra/open/qwen2.5-coder-0.5b-python-fim/.venv/bin/python3
+                git:
+                    commit: 8f4a0fea2ad9a43213ea2e17f6776d3abe252fd4
+                    remote: git@github.com:Rudra-G-23/qwen2.5-coder-0.5b-python-fim.git
+                host: LAPTOP-E03IAI0P
+                memory:
+                    total: "10429255680"
+                os: Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.43
+                program: /home/rudra/open/qwen2.5-coder-0.5b-python-fim/scripts/build_sample.py
+                python: CPython 3.13.14
+                root: /home/rudra/open/qwen2.5-coder-0.5b-python-fim
+                startedAt: "2026-08-29T13:36:33.734081Z"
+                writerId: chfn943dhb1yan1oggod1ijahck70vhm
+        m: []
+        python_version: 3.13.14
+        t:
+            "1":
+                - 49
+            "2":
+                - 1
+                - 49
+                - 51
+            "3":
+                - 2
+                - 14
+                - 15
+                - 61
+            "4": 3.13.14
+            "5": 0.28.1
+            "12": 0.28.1
+            "13": linux-x86_64
