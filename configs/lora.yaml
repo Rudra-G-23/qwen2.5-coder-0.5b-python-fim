@@ -1,0 +1,63 @@
+# configs/lora.yaml
+# All hyperparameters for the LoRA run.
+# Change values here — never hardcode them in training scripts.
+
+model:
+  name: "Qwen/Qwen2.5-Coder-0.5B"   # base model from Hugging Face
+  max_seq_length: 2048
+
+lora:
+  r: 16                              # rank — start at 16, double if underfitting
+  alpha: 32                          # lora_alpha = 2 * r is the standard rule
+  dropout: 0.05
+  target_modules:                    # transformer projection layers to adapt
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  num_epochs: 1                      # 1 epoch to validate pipeline; scale up later
+  per_device_train_batch_size: 4
+  gradient_accumulation_steps: 4     # effective batch = 4 * 4 = 16
+  learning_rate: 2.0e-4
+  warmup_steps: 50
+  lr_scheduler_type: "cosine"        # warmup + cosine decay — standard practice
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  seed: 42
+  fp16: true                         # T4/P100 support fp16 natively
+  optim: "adamw_torch"               # optimizer name — logged to W&B config
+
+data:
+  path: "data/fim_dataset.jsonl"
+  train_split: 0.90
+  val_split: 0.10
+
+output:
+  dir: "/kaggle/working/checkpoints"
+  hf_repo: "Rudra-G-23/qwen2.5-coder-0.5b-python-fim-lora"
+
+# ── Weights & Biases ─────────────────────────────────────────────────────────
+# Run ID is built deterministically at runtime from the fields below.
+# Format: {model_slug}-lora-r{r}-e{epochs}-ds{dataset_version}-{YYYYMMDD}-a{attempt}
+# Example: qwen05b-lora-r16-e3-dsv1-20260810-a1
+wandb:
+  project: "521er1007-national-institute-of-technology-rourkela/qwen-coder-python-fim"
+
+  # ── Fields that compose the deterministic run ID ─────────────────────────
+  # Set these at the START of each Kaggle session before running.
+  attempt: 1                         # increment each time you re-run the same config
+  dataset_version: "v1"              # matches the Kaggle Dataset version attached
+
+  # ── Optional metadata ─────────────────────────────────────────────────────
+  tags:
+    - "qwen"
+    - "fim"
+    - "lora"
+    - "python"
+  notes: "LoRA FIM fine-tune of Qwen2.5-Coder-0.5B on Python fill-in-the-middle dataset"

@@ -1,0 +1,17 @@
+# Third-Party Notices
+
+## Qwen2.5-Coder
+
+This project uses Qwen2.5-Coder-0.5B as its base code model.
+
+Qwen2.5-Coder is developed by the Qwen Team and is licensed under the Apache License, Version 2.0.
+
+The applicable license and attribution information for Qwen2.5-Coder should be preserved when redistributing the model, model derivatives, or other Qwen-derived artifacts.
+
+This repository's MIT License applies only to the original source code authored for this project and does not replace or modify the licenses of third-party models, datasets, libraries, or other external materials.
+
+## External Datasets and Software
+
+Third-party datasets, pretrained models, libraries, benchmarks, and other external materials used by this project remain subject to their respective licenses and terms.
+
+Users are responsible for reviewing and complying with the applicable licenses of third-party materials before redistributing them.
